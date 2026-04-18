@@ -193,98 +193,113 @@ class TestBackoff:
 
 
 # ===========================================================================
-# SERIES-BASED PULLING (added when Kalshi's /markets endpoint proved unusable
-# for surfacing real prediction markets — sports/exotics dominate by 99%+)
+# EVENTS-BASED PULLING (Kalshi's /markets endpoint was dominated by sports/
+# exotics junk; /series required per-series calls triggering 429s. /events
+# with_nested_markets returns real data in one pass.)
 # ===========================================================================
 
 from unittest.mock import patch, MagicMock
 
 
-class TestSeriesFiltering:
-    """pull_allowed_series should filter /series results to allowed categories."""
+def _valid_nested_market(ticker="T1", **overrides):
+    """Minimal valid nested-market blob as returned by /events."""
+    base = {
+        "ticker": ticker,
+        "event_ticker": "EVT",
+        "title": "t",
+        "status": "active",
+        "yes_bid_dollars": "0.40",
+        "yes_ask_dollars": "0.45",
+        "no_bid_dollars": "0.55",
+        "no_ask_dollars": "0.60",
+        "last_price_dollars": "0.42",
+        "volume_fp": "100",
+        "volume_24h_fp": "50",
+        "open_interest_fp": "100",
+        "open_time": "2026-03-01T00:00:00Z",
+        "close_time": "2026-06-01T00:00:00Z",
+    }
+    base.update(overrides)
+    return base
+
+
+class TestEventsBasedPulling:
 
     @patch("core.kalshi_client.kalshi_get")
-    def test_filters_by_category(self, mock_get):
-        # Mock /series response with mixed categories
+    def test_filters_by_event_category(self, mock_get):
+        # Three events: one allowed, one sports (dropped), one Entertainment (dropped)
         mock_get.return_value = {
-            "series": [
-                {"ticker": "KXCPI", "category": "Economics"},
-                {"ticker": "KXNFL", "category": "Sports"},
-                {"ticker": "KXMVEX", "category": "Exotics"},
-                {"ticker": "KXWARMING", "category": "Climate and Weather"},
-                {"ticker": "KXCELEB", "category": "Entertainment"},
-                {"ticker": "KXPOLICY", "category": "Politics"},
-                {"ticker": "KXJUNK", "category": ""},
-            ]
+            "events": [
+                {"event_ticker": "EVT-A", "category": "Economics",
+                 "markets": [_valid_nested_market("A1"), _valid_nested_market("A2")]},
+                {"event_ticker": "EVT-B", "category": "Sports",
+                 "markets": [_valid_nested_market("B1")]},
+                {"event_ticker": "EVT-C", "category": "Entertainment",
+                 "markets": [_valid_nested_market("C1")]},
+            ],
+            "cursor": "",
         }
-        result = list(kc.pull_allowed_series("keyid", MagicMock()))
-        assert result == ["KXCPI", "KXWARMING", "KXPOLICY"]
-
-    @patch("core.kalshi_client.kalshi_get")
-    def test_empty_series_list(self, mock_get):
-        mock_get.return_value = {"series": []}
-        result = list(kc.pull_allowed_series("keyid", MagicMock()))
-        assert result == []
-
-
-class TestPullMarketsForSeries:
-    """pull_markets_for_series should paginate through one series' markets."""
-
-    @patch("core.kalshi_client.kalshi_get")
-    def test_paginates_within_series(self, mock_get):
-        # First page returns cursor, second page returns empty cursor
-        def make_market(ticker):
-            return {
-                "ticker": ticker,
-                "event_ticker": "EVT",
-                "title": "T",
-                "status": "active",
-                "yes_bid_dollars": "0.40",
-                "yes_ask_dollars": "0.45",
-                "no_bid_dollars": "0.55",
-                "no_ask_dollars": "0.60",
-                "last_price_dollars": "0.42",
-                "volume_fp": "100",
-                "volume_24h_fp": "50",
-                "open_interest_fp": "100",
-                "open_time": "2026-03-01T00:00:00Z",
-                "close_time": "2026-06-01T00:00:00Z",
-                "category": "Economics",
-            }
-
-        mock_get.side_effect = [
-            {"markets": [make_market("T1"), make_market("T2")], "cursor": "next"},
-            {"markets": [make_market("T3")], "cursor": ""},
-        ]
-        snaps = list(kc.pull_markets_for_series("KXCPI", "keyid", MagicMock(),
-                                                captured_at_utc="2026-04-18T15:00:00Z"))
-        assert len(snaps) == 3
-        assert [s.ticker for s in snaps] == ["T1", "T2", "T3"]
-        # Second call should have used cursor
-        second_call_params = mock_get.call_args_list[1].kwargs.get("params", {})
-        assert second_call_params.get("cursor") == "next"
-        assert second_call_params.get("series_ticker") == "KXCPI"
-
-
-class TestPullAllOpenMarketsComposes:
-    """pull_all_open_markets should compose series filter + per-series pull."""
-
-    @patch("core.kalshi_client.pull_markets_for_series")
-    @patch("core.kalshi_client.pull_allowed_series")
-    def test_composes(self, mock_series, mock_markets):
-        # Mock: two allowed series, each yields 2 markets
-        mock_series.return_value = iter(["KXCPI", "KXWARMING"])
-
-        def fake_markets(series_ticker, *args, **kwargs):
-            for t in [f"{series_ticker}-A", f"{series_ticker}-B"]:
-                yield MagicMock(ticker=t)
-
-        mock_markets.side_effect = fake_markets
-
         result = list(kc.pull_all_open_markets(
-            "keyid", MagicMock(), captured_at_utc="2026-04-18T15:00:00Z"
+            "keyid", MagicMock(), captured_at_utc="2026-04-18T15:00:00Z",
         ))
-        assert len(result) == 4
-        assert [s.ticker for s in result] == [
-            "KXCPI-A", "KXCPI-B", "KXWARMING-A", "KXWARMING-B"
+        assert [s.ticker for s in result] == ["A1", "A2"]
+        # Verify we hit /events with the nested flag
+        call_params = mock_get.call_args.kwargs.get("params", {})
+        assert call_params.get("with_nested_markets") == "true"
+        assert call_params.get("status") == "open"
+
+    @patch("core.kalshi_client.kalshi_get")
+    def test_paginates_across_pages(self, mock_get):
+        mock_get.side_effect = [
+            {
+                "events": [{"event_ticker": "EVT-1", "category": "Crypto",
+                            "markets": [_valid_nested_market("X1")]}],
+                "cursor": "next",
+            },
+            {
+                "events": [{"event_ticker": "EVT-2", "category": "Politics",
+                            "markets": [_valid_nested_market("X2")]}],
+                "cursor": "",
+            },
         ]
+        result = list(kc.pull_all_open_markets(
+            "keyid", MagicMock(), captured_at_utc="2026-04-18T15:00:00Z",
+        ))
+        assert [s.ticker for s in result] == ["X1", "X2"]
+        # Second call should have passed cursor
+        second_params = mock_get.call_args_list[1].kwargs.get("params", {})
+        assert second_params.get("cursor") == "next"
+
+    @patch("core.kalshi_client.kalshi_get")
+    def test_event_with_no_markets_safe(self, mock_get):
+        """Empty markets list / missing markets key should not crash."""
+        mock_get.return_value = {
+            "events": [
+                {"event_ticker": "EVT-1", "category": "Economics", "markets": []},
+                {"event_ticker": "EVT-2", "category": "Economics"},  # no "markets" key
+                {"event_ticker": "EVT-3", "category": "Economics",
+                 "markets": [_valid_nested_market("OK")]},
+            ],
+            "cursor": "",
+        }
+        result = list(kc.pull_all_open_markets(
+            "keyid", MagicMock(), captured_at_utc="2026-04-18T15:00:00Z",
+        ))
+        assert [s.ticker for s in result] == ["OK"]
+
+    @patch("core.kalshi_client.kalshi_get")
+    def test_inherits_category_from_event(self, mock_get):
+        """Nested markets don't have a category field themselves; our parser
+        must inherit it from the event for downstream categorization."""
+        mock_get.return_value = {
+            "events": [
+                {"event_ticker": "EVT-1", "category": "Economics",
+                 "markets": [_valid_nested_market("X1")]},
+            ],
+            "cursor": "",
+        }
+        result = list(kc.pull_all_open_markets(
+            "keyid", MagicMock(), captured_at_utc="2026-04-18T15:00:00Z",
+        ))
+        assert len(result) == 1
+        assert result[0].category_raw == "Economics"

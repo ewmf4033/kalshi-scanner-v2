@@ -266,114 +266,64 @@ def minutes_to_close(close_time_utc: str, now_utc: str) -> int:
 # Market pulling — the only public business function
 # ---------------------------------------------------------------------------
 
-def pull_allowed_series(
-    api_key_id: str,
-    private_key,
-    max_pages: int = 100,
-) -> Iterator[str]:
-    """
-    Enumerate Kalshi series, yield tickers for categories in the allowlist.
-
-    Why this exists:
-        Kalshi's /markets endpoint returns ~99% sports + exotics (KXMVE*)
-        by default. Filtering at the market level after-the-fact wastes
-        API budget. Series are the right scope — each series has exactly
-        one category, and we can scope /markets pulls by series_ticker.
-
-    The /series endpoint doesn't accept a category filter, so we pull
-    everything and filter client-side. This is ~10K series ≈ 50 pages
-    at 200/page, done once per scan.
-    """
-    cursor = None
-    pages = 0
-    while pages < max_pages:
-        params = {"limit": 200}
-        if cursor:
-            params["cursor"] = cursor
-
-        data = kalshi_get("/series", api_key_id, private_key, params=params)
-        series = data.get("series", [])
-        if not series:
-            break
-
-        for s in series:
-            cat = s.get("category", "")
-            if config.is_allowed_category(cat):
-                ticker = s.get("ticker")
-                if ticker:
-                    yield ticker
-
-        cursor = data.get("cursor")
-        pages += 1
-        if not cursor:
-            break
-
-        time.sleep(1.0 / config.KALSHI_RATE_LIMIT["requests_per_second"])
-
-
-def pull_markets_for_series(
-    series_ticker: str,
-    api_key_id: str,
-    private_key,
-    captured_at_utc: str,
-    max_pages: int = 20,
-) -> Iterator[MarketSnapshot]:
-    """
-    Pull all open markets within a single series, yielding validated snapshots.
-
-    Series typically have 1-50 markets; max_pages=20 × 200 markets/page
-    handles even the largest (e.g. tournament brackets) with plenty of headroom.
-    """
-    cursor = None
-    pages = 0
-    while pages < max_pages:
-        params = {"limit": 200, "series_ticker": series_ticker, "status": "open"}
-        if cursor:
-            params["cursor"] = cursor
-
-        data = kalshi_get("/markets", api_key_id, private_key, params=params)
-        markets = data.get("markets", [])
-        if not markets:
-            break
-
-        for raw in markets:
-            snap = parse_market(raw, captured_at_utc=captured_at_utc)
-            if snap is not None:
-                yield snap
-
-        cursor = data.get("cursor")
-        pages += 1
-        if not cursor:
-            break
-
-        time.sleep(1.0 / config.KALSHI_RATE_LIMIT["requests_per_second"])
-
-
 def pull_all_open_markets(
     api_key_id: str,
     private_key,
     captured_at_utc: str,
-    max_pages: int = 50,  # kept for signature compat; applied per-series
+    max_pages: int = 50,
 ) -> Iterator[MarketSnapshot]:
     """
-    Stream MarketSnapshots across all series in the allowed-category universe.
+    Stream MarketSnapshots across all open markets in allowed categories.
 
-    Architecture: series-scoped pulling.
-        1. Enumerate /series, filter to allowlist client-side.
-        2. For each allowed series, pull /markets?series_ticker=X.
+    Architecture: events-with-nested-markets.
+        /events?status=open&with_nested_markets=true returns events with
+        their fully-populated markets inline — yes_bid_dollars, no_ask_dollars,
+        volume_24h_fp, everything. One page = ~200 events = hundreds of markets.
+        Category filter is applied client-side against config.KALSHI_CATEGORY_ALLOWLIST.
 
-    This replaces the flat /markets pull, which returned ~99% sports junk
-    regardless of URL filters. Live-verified 2026-04-18: flat pull of 10K
-    markets yielded zero CPI/Fed/weather/politics markets.
+    Why not /series or /markets:
+        /markets returns ~99% sports/exotics junk regardless of URL filters
+          (live-verified 2026-04-18: 10K markets pulled, zero real markets).
+        /series requires one follow-up call per series (~3300 calls),
+          triggering 429 rate limits within seconds.
+        /events with nested markets is the only endpoint that returns
+          real-world market data in usable batch form.
 
-    Note: parse_market already rejects empty orderbooks, unknown statuses,
-    etc., so callers still get validated MarketSnapshot objects only.
+    Paces calls via config.KALSHI_RATE_LIMIT["requests_per_second"] to
+    avoid 429 storms.
     """
-    for series_ticker in pull_allowed_series(api_key_id, private_key):
-        yield from pull_markets_for_series(
-            series_ticker,
-            api_key_id,
-            private_key,
-            captured_at_utc=captured_at_utc,
-            max_pages=max_pages,
-        )
+    cursor = None
+    pages = 0
+    inter_call_sleep = 1.0 / config.KALSHI_RATE_LIMIT["requests_per_second"]
+
+    while pages < max_pages:
+        params = {
+            "limit": 200,
+            "status": "open",
+            "with_nested_markets": "true",
+        }
+        if cursor:
+            params["cursor"] = cursor
+
+        data = kalshi_get("/events", api_key_id, private_key, params=params)
+        events = data.get("events", [])
+        if not events:
+            break
+
+        for event in events:
+            if not config.is_allowed_category(event.get("category", "")):
+                continue
+            for raw_market in event.get("markets", []) or []:
+                # Inherit category from event — markets in nested responses
+                # don't carry it directly, but we need it for the snapshot.
+                raw_market.setdefault("category", event.get("category", ""))
+                snap = parse_market(raw_market, captured_at_utc=captured_at_utc)
+                if snap is not None:
+                    yield snap
+
+        cursor = data.get("cursor")
+        pages += 1
+        if not cursor:
+            break
+
+        time.sleep(inter_call_sleep)
