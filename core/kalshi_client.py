@@ -230,6 +230,7 @@ def parse_market(raw: dict, captured_at_utc: str) -> Optional[MarketSnapshot]:
             volume=float(raw.get("volume_fp", 0) or 0),
             volume_24h=float(raw.get("volume_24h_fp", 0) or 0),
             open_interest=int(float(raw.get("open_interest_fp", 0) or 0)),
+            open_time_utc=raw.get("open_time", ""),
             close_time_utc=raw.get("close_time", ""),
             captured_at_utc=captured_at_utc,
             category_raw=raw.get("category", "") or "",

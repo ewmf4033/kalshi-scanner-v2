@@ -75,6 +75,7 @@ class TestMarketParsing:
             "volume_fp": "1500.0",
             "volume_24h_fp": "200.0",
             "open_interest_fp": "800",
+            "open_time": "2026-03-01T15:00:00Z",
             "close_time": "2026-05-12T12:00:00Z",
             "category": "Economics",
         }

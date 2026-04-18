@@ -63,6 +63,18 @@ class Category(str, Enum):
     OTHER = "other"
 
 
+class FilterReason(str, Enum):
+    """Why a MarketSnapshot was accepted or rejected by the tradeability filter.
+    PASSED is explicit so ingest counters can use a single enum for all buckets."""
+    PASSED = "passed"
+    SPREAD_TOO_WIDE = "spread_too_wide"
+    LOW_LIQUIDITY = "low_liquidity"
+    PRICE_OUT_OF_RANGE = "price_out_of_range"
+    TOO_CLOSE_TO_SETTLEMENT = "too_close_to_settlement"
+    TOO_NEW = "too_new"
+    DEVIG_FAILED = "devig_failed"
+
+
 class MarketStatus(str, Enum):
     """
     Kalshi market statuses. Verified against live API 2026-04-18:
@@ -148,6 +160,7 @@ class MarketSnapshot:
     volume_24h: float
     open_interest: int
 
+    open_time_utc: str      # ISO-8601, when market opened for trading
     close_time_utc: str     # ISO-8601
     captured_at_utc: str    # ISO-8601
     category_raw: str       # Kalshi's category string — not normalized
@@ -167,6 +180,7 @@ class MarketSnapshot:
             raise ValueError(f"open_interest cannot be negative, got {self.open_interest}")
         if self.volume < 0 or self.volume_24h < 0:
             raise ValueError("volume cannot be negative")
+        _validate_iso_datetime(self.open_time_utc, "open_time_utc")
         _validate_iso_datetime(self.close_time_utc, "close_time_utc")
         _validate_iso_datetime(self.captured_at_utc, "captured_at_utc")
 
@@ -177,6 +191,52 @@ class MarketSnapshot:
     @property
     def mid_cents(self) -> float:
         return (self.yes_bid_cents + self.yes_ask_cents) / 2.0
+
+
+# ---------------------------------------------------------------------------
+# EnrichedMarket — MarketSnapshot + derived fields after tradeability filter
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class EnrichedMarket:
+    """
+    A MarketSnapshot that passed tradeability filters, with derived fields.
+
+    fair_prob_yes is de-vigged via the multiplicative method — raw mid is
+    NEVER used as a probability. This class exists specifically to prevent
+    the v1 implied_prob-overwrite bug from recurring.
+
+    Composition over inheritance: we wrap the snapshot rather than copy
+    its fields. Audit trail preserved — enriched.snapshot.raw_json is
+    always the raw Kalshi response.
+    """
+    snapshot: MarketSnapshot
+    fair_prob_yes: float           # de-vigged p(YES), strictly in (0, 1)
+    minutes_to_close: int          # >= 0
+    hours_since_open: float        # >= 0
+    category: Category             # normalized from snapshot.category_raw
+
+    def __post_init__(self):
+        if not (0.0 < self.fair_prob_yes < 1.0):
+            raise ValueError(
+                f"fair_prob_yes must be strictly in (0, 1), got {self.fair_prob_yes}"
+            )
+        if self.minutes_to_close < 0:
+            raise ValueError(f"minutes_to_close must be >= 0, got {self.minutes_to_close}")
+        if self.hours_since_open < 0:
+            raise ValueError(f"hours_since_open must be >= 0, got {self.hours_since_open}")
+
+    @property
+    def ticker(self) -> str:
+        return self.snapshot.ticker
+
+    @property
+    def mid_cents(self) -> float:
+        return self.snapshot.mid_cents
+
+    @property
+    def spread_cents(self) -> int:
+        return self.snapshot.spread_cents
 
 
 # ---------------------------------------------------------------------------
