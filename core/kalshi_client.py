@@ -162,6 +162,7 @@ def kalshi_get(
 _STATUS_MAP = {
     "active": MarketStatus.ACTIVE,   # Live-verified: Kalshi returns "active" for trading markets
     "open": MarketStatus.OPEN,       # Kept for safety / legacy
+    "inactive": MarketStatus.INACTIVE,  # Event exists but market not yet/not currently trading
     "settled": MarketStatus.SETTLED,
     "finalized": MarketStatus.FINALIZED,
     "halted": MarketStatus.HALTED,
@@ -193,6 +194,20 @@ def parse_market(raw: dict, captured_at_utc: str) -> Optional[MarketSnapshot]:
             "reason": "unknown_status",
             "status_raw": status_raw,
         }))
+        return None
+
+    # Reject non-trading statuses immediately. These are mapped correctly
+    # but aren't actionable. Silent (no log) since this is normal — event
+    # listings include markets that haven't opened yet or have closed.
+    _NON_TRADEABLE = {
+        MarketStatus.INACTIVE,
+        MarketStatus.SETTLED,
+        MarketStatus.FINALIZED,
+        MarketStatus.HALTED,
+        MarketStatus.PAUSED,
+        MarketStatus.SETTLEMENT_PENDING,
+    }
+    if status in _NON_TRADEABLE:
         return None
 
     # Reject empty or partial orderbooks upfront. This is the v1 empty-book fix.

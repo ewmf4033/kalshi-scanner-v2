@@ -84,6 +84,7 @@ class MarketStatus(str, Enum):
     """
     ACTIVE = "active"           # Trading, what v1 would have called "open"
     OPEN = "open"               # Legacy / alternate
+    INACTIVE = "inactive"       # Listed but not currently trading
     SETTLED = "settled"
     FINALIZED = "finalized"
     HALTED = "halted"

@@ -116,19 +116,24 @@ class TestMarketParsing:
         raw = self._valid_market_json(no_ask_dollars=None)
         assert kc.parse_market(raw, captured_at_utc="2026-04-18T15:00:00Z") is None
 
-    def test_maps_status_to_enum(self):
+    def test_tradeable_statuses_parse(self):
+        """Active and open statuses should parse into a MarketSnapshot."""
         for raw_status, expected in [
-            ("active", MarketStatus.ACTIVE),     # Kalshi's actual "open for trading" value
+            ("active", MarketStatus.ACTIVE),
             ("open", MarketStatus.OPEN),
-            ("settled", MarketStatus.SETTLED),
-            ("finalized", MarketStatus.FINALIZED),
-            ("halted", MarketStatus.HALTED),
-            ("paused", MarketStatus.PAUSED),
-            ("settlement_pending", MarketStatus.SETTLEMENT_PENDING),
         ]:
             raw = self._valid_market_json(status=raw_status)
             snap = kc.parse_market(raw, captured_at_utc="2026-04-18T15:00:00Z")
+            assert snap is not None, f"tradeable status {raw_status} incorrectly rejected"
             assert snap.status == expected, f"status {raw_status} did not map to {expected}"
+
+    def test_non_tradeable_statuses_rejected_silently(self):
+        """Non-trading statuses are mapped correctly in the enum but parse_market
+        returns None — they're not actionable, and logging them is noise."""
+        for raw_status in ["inactive", "settled", "finalized", "halted", "paused", "settlement_pending"]:
+            raw = self._valid_market_json(status=raw_status)
+            snap = kc.parse_market(raw, captured_at_utc="2026-04-18T15:00:00Z")
+            assert snap is None, f"non-tradeable status {raw_status} should have been rejected"
 
     def test_unknown_status_returns_none(self):
         """Unknown statuses fail closed — we don't guess."""
