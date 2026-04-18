@@ -160,7 +160,8 @@ def kalshi_get(
 # ---------------------------------------------------------------------------
 
 _STATUS_MAP = {
-    "open": MarketStatus.OPEN,
+    "active": MarketStatus.ACTIVE,   # Live-verified: Kalshi returns "active" for trading markets
+    "open": MarketStatus.OPEN,       # Kept for safety / legacy
     "settled": MarketStatus.SETTLED,
     "finalized": MarketStatus.FINALIZED,
     "halted": MarketStatus.HALTED,
@@ -195,7 +196,8 @@ def parse_market(raw: dict, captured_at_utc: str) -> Optional[MarketSnapshot]:
         return None
 
     # Reject empty or partial orderbooks upfront. This is the v1 empty-book fix.
-    for field in ("yes_bid", "yes_ask", "no_bid", "no_ask"):
+    # Kalshi uses *_dollars (string like "0.2400") — None means no book on that side.
+    for field in ("yes_bid_dollars", "yes_ask_dollars", "no_bid_dollars", "no_ask_dollars"):
         if raw.get(field) is None:
             log.info(json.dumps({
                 "phase": "parse_market",
@@ -206,31 +208,40 @@ def parse_market(raw: dict, captured_at_utc: str) -> Optional[MarketSnapshot]:
             return None
 
     try:
+        # Kalshi returns prices as dollar strings ("0.2400"), volume/OI as fp strings ("246.00").
+        # We convert prices to integer cents and volume/OI to floats/ints.
+        yes_bid_c = int(round(float(raw["yes_bid_dollars"]) * 100))
+        yes_ask_c = int(round(float(raw["yes_ask_dollars"]) * 100))
+        no_bid_c  = int(round(float(raw["no_bid_dollars"])  * 100))
+        no_ask_c  = int(round(float(raw["no_ask_dollars"])  * 100))
+        last_price_c = (int(round(float(raw["last_price_dollars"]) * 100))
+                        if raw.get("last_price_dollars") is not None else None)
+
         snap = MarketSnapshot(
             ticker=ticker,
             event_ticker=raw.get("event_ticker", ""),
             title=raw.get("title", ""),
             status=status,
-            yes_bid_cents=int(raw["yes_bid"]),
-            yes_ask_cents=int(raw["yes_ask"]),
-            no_bid_cents=int(raw["no_bid"]),
-            no_ask_cents=int(raw["no_ask"]),
-            last_price_cents=(int(raw["last_price"]) if raw.get("last_price") is not None else None),
-            volume=float(raw.get("volume", 0) or 0),
-            volume_24h=float(raw.get("volume_24h", 0) or 0),
-            open_interest=int(raw.get("open_interest", 0) or 0),
+            yes_bid_cents=yes_bid_c,
+            yes_ask_cents=yes_ask_c,
+            no_bid_cents=no_bid_c,
+            no_ask_cents=no_ask_c,
+            last_price_cents=last_price_c,
+            volume=float(raw.get("volume_fp", 0) or 0),
+            volume_24h=float(raw.get("volume_24h_fp", 0) or 0),
+            open_interest=int(float(raw.get("open_interest_fp", 0) or 0)),
             close_time_utc=raw.get("close_time", ""),
             captured_at_utc=captured_at_utc,
             category_raw=raw.get("category", "") or "",
             raw_json=raw,
         )
         return snap
-    except (ValueError, TypeError) as e:
+    except (ValueError, TypeError, KeyError) as e:
         log.warning(json.dumps({
             "phase": "parse_market",
             "ticker": ticker,
             "reason": "schema_validation_failed",
-            "error": str(e),
+            "error": f"{type(e).__name__}: {e}",
         }))
         return None
 

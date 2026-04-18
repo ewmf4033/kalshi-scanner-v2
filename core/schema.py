@@ -64,7 +64,14 @@ class Category(str, Enum):
 
 
 class MarketStatus(str, Enum):
-    OPEN = "open"
+    """
+    Kalshi market statuses. Verified against live API 2026-04-18:
+    Kalshi's /markets endpoint returns "active" for currently-trading markets,
+    even when the URL filter is status=open. This is a Kalshi quirk — the "open"
+    URL param filters correctly, but the response field says "active".
+    """
+    ACTIVE = "active"           # Trading, what v1 would have called "open"
+    OPEN = "open"               # Legacy / alternate
     SETTLED = "settled"
     FINALIZED = "finalized"
     HALTED = "halted"

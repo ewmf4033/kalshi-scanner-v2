@@ -61,20 +61,20 @@ class TestMarketParsing:
     """
 
     def _valid_market_json(self, **overrides):
-        """Minimal valid Kalshi market response."""
+        """Minimal valid Kalshi market response — uses real Kalshi field names."""
         base = {
             "ticker": "KXCPI-26MAY-T0.4",
             "event_ticker": "KXCPI-26MAY",
             "title": "April CPI above 0.4% MoM",
             "status": "open",
-            "yes_bid": 62,
-            "yes_ask": 65,
-            "no_bid": 33,
-            "no_ask": 36,
-            "last_price": 63,
-            "volume": 1500.0,
-            "volume_24h": 200.0,
-            "open_interest": 800,
+            "yes_bid_dollars": "0.6200",
+            "yes_ask_dollars": "0.6500",
+            "no_bid_dollars":  "0.3300",
+            "no_ask_dollars":  "0.3600",
+            "last_price_dollars": "0.6300",
+            "volume_fp": "1500.0",
+            "volume_24h_fp": "200.0",
+            "open_interest_fp": "800",
             "close_time": "2026-05-12T12:00:00Z",
             "category": "Economics",
         }
@@ -97,7 +97,7 @@ class TestMarketParsing:
 
     def test_parses_null_last_price(self):
         """last_price is nullable — market with no trades yet."""
-        raw = self._valid_market_json(last_price=None)
+        raw = self._valid_market_json(last_price_dollars=None)
         snap = kc.parse_market(raw, captured_at_utc="2026-04-18T15:00:00Z")
         assert snap is not None
         assert snap.last_price_cents is None
@@ -107,16 +107,17 @@ class TestMarketParsing:
         Empty orderbook (None asks/bids) — the v1 bug that produced fake WTI alerts.
         parse_market must return None for these, not a snapshot with 0s.
         """
-        raw = self._valid_market_json(yes_bid=None, yes_ask=None)
+        raw = self._valid_market_json(yes_bid_dollars=None, yes_ask_dollars=None)
         assert kc.parse_market(raw, captured_at_utc="2026-04-18T15:00:00Z") is None
 
     def test_rejects_partial_orderbook(self):
         """Even one None in the book = reject."""
-        raw = self._valid_market_json(no_ask=None)
+        raw = self._valid_market_json(no_ask_dollars=None)
         assert kc.parse_market(raw, captured_at_utc="2026-04-18T15:00:00Z") is None
 
     def test_maps_status_to_enum(self):
         for raw_status, expected in [
+            ("active", MarketStatus.ACTIVE),     # Kalshi's actual "open for trading" value
             ("open", MarketStatus.OPEN),
             ("settled", MarketStatus.SETTLED),
             ("finalized", MarketStatus.FINALIZED),
