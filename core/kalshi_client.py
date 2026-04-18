@@ -266,22 +266,68 @@ def minutes_to_close(close_time_utc: str, now_utc: str) -> int:
 # Market pulling — the only public business function
 # ---------------------------------------------------------------------------
 
-def pull_all_open_markets(
+def pull_allowed_series(
     api_key_id: str,
     private_key,
-    captured_at_utc: str,
-    max_pages: int = 50,
-) -> Iterator[MarketSnapshot]:
+    max_pages: int = 100,
+) -> Iterator[str]:
     """
-    Stream MarketSnapshots for all open non-sports markets.
+    Enumerate Kalshi series, yield tickers for categories in the allowlist.
 
-    Yields validated snapshots. Unparseable markets are dropped and logged.
-    Sports filtering happens in scanner/ingest.py, not here.
+    Why this exists:
+        Kalshi's /markets endpoint returns ~99% sports + exotics (KXMVE*)
+        by default. Filtering at the market level after-the-fact wastes
+        API budget. Series are the right scope — each series has exactly
+        one category, and we can scope /markets pulls by series_ticker.
+
+    The /series endpoint doesn't accept a category filter, so we pull
+    everything and filter client-side. This is ~10K series ≈ 50 pages
+    at 200/page, done once per scan.
     """
     cursor = None
     pages = 0
     while pages < max_pages:
-        params = {"limit": 200, "status": "open"}
+        params = {"limit": 200}
+        if cursor:
+            params["cursor"] = cursor
+
+        data = kalshi_get("/series", api_key_id, private_key, params=params)
+        series = data.get("series", [])
+        if not series:
+            break
+
+        for s in series:
+            cat = s.get("category", "")
+            if config.is_allowed_category(cat):
+                ticker = s.get("ticker")
+                if ticker:
+                    yield ticker
+
+        cursor = data.get("cursor")
+        pages += 1
+        if not cursor:
+            break
+
+        time.sleep(1.0 / config.KALSHI_RATE_LIMIT["requests_per_second"])
+
+
+def pull_markets_for_series(
+    series_ticker: str,
+    api_key_id: str,
+    private_key,
+    captured_at_utc: str,
+    max_pages: int = 20,
+) -> Iterator[MarketSnapshot]:
+    """
+    Pull all open markets within a single series, yielding validated snapshots.
+
+    Series typically have 1-50 markets; max_pages=20 × 200 markets/page
+    handles even the largest (e.g. tournament brackets) with plenty of headroom.
+    """
+    cursor = None
+    pages = 0
+    while pages < max_pages:
+        params = {"limit": 200, "series_ticker": series_ticker, "status": "open"}
         if cursor:
             params["cursor"] = cursor
 
@@ -300,5 +346,34 @@ def pull_all_open_markets(
         if not cursor:
             break
 
-        # Pace ourselves between pages regardless of whether we hit 429
         time.sleep(1.0 / config.KALSHI_RATE_LIMIT["requests_per_second"])
+
+
+def pull_all_open_markets(
+    api_key_id: str,
+    private_key,
+    captured_at_utc: str,
+    max_pages: int = 50,  # kept for signature compat; applied per-series
+) -> Iterator[MarketSnapshot]:
+    """
+    Stream MarketSnapshots across all series in the allowed-category universe.
+
+    Architecture: series-scoped pulling.
+        1. Enumerate /series, filter to allowlist client-side.
+        2. For each allowed series, pull /markets?series_ticker=X.
+
+    This replaces the flat /markets pull, which returned ~99% sports junk
+    regardless of URL filters. Live-verified 2026-04-18: flat pull of 10K
+    markets yielded zero CPI/Fed/weather/politics markets.
+
+    Note: parse_market already rejects empty orderbooks, unknown statuses,
+    etc., so callers still get validated MarketSnapshot objects only.
+    """
+    for series_ticker in pull_allowed_series(api_key_id, private_key):
+        yield from pull_markets_for_series(
+            series_ticker,
+            api_key_id,
+            private_key,
+            captured_at_utc=captured_at_utc,
+            max_pages=max_pages,
+        )

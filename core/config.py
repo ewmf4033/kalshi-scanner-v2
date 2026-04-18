@@ -93,6 +93,47 @@ TRADEABILITY = {
 }
 
 # ---------------------------------------------------------------------------
+# Kalshi category allowlist
+#
+# Kalshi's /markets endpoint returns ~90% Sports + Exotics (KXMVE*) tickers
+# by default. To surface actually-tradeable markets we pull by SERIES, not
+# by market. Each series is tagged with one of these categories — we
+# enumerate series, filter to this allowlist, then pull markets per series.
+#
+# Live-verified against /series endpoint on 2026-04-18. The 11 allowed
+# categories cover ~3,300 of the ~9,700 total series. Excluded:
+#   Sports (1744), Exotics (10), Entertainment (2358) — celebrity gossip,
+#   Mentions (336) — mention-count tallies,
+#   Social (73) — engagement-metric markets,
+#   Transportation (40) and Education (2) — too niche to justify pipeline,
+#   and "" (43) — uncategorized junk.
+# ---------------------------------------------------------------------------
+
+KALSHI_CATEGORY_ALLOWLIST = frozenset({
+    "Economics",
+    "Financials",
+    "Climate and Weather",
+    "Politics",
+    "Elections",
+    "Crypto",
+    "Commodities",
+    "Health",
+    "Science and Technology",
+    "Companies",
+    "World",
+})
+
+
+def is_allowed_category(raw: str) -> bool:
+    """True iff the raw Kalshi category string matches an allowed category.
+    Case-sensitive match against Kalshi's actual strings — their API is
+    consistent on this. Empty / missing categories are excluded."""
+    if not raw:
+        return False
+    return raw in KALSHI_CATEGORY_ALLOWLIST
+
+
+# ---------------------------------------------------------------------------
 # Edge thresholds (minimum edge to alert, by category)
 #   Computed against fee-adjusted expected value, not raw edge.
 #   If your edge < 2 * (expected fee), you're paying fees without keeping alpha.
