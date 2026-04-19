@@ -262,14 +262,26 @@ class ModelOutput:
     confidence: Confidence
     catalyst: str
     category: Category
+    reasoning: str = ""       # Chain-of-thought from the LLM. Audit trail.
 
     def __post_init__(self):
         _validate_prob(self.model_prob_yes, "model_prob_yes")
         _validate_prob(self.prob_range_lo, "prob_range_lo")
         _validate_prob(self.prob_range_hi, "prob_range_hi")
+        # Hard floor: never exactly 0 or 1; enforce minimum distance from bounds
+        for f, name in [(self.model_prob_yes, "model_prob_yes"),
+                        (self.prob_range_lo, "prob_range_lo"),
+                        (self.prob_range_hi, "prob_range_hi")]:
+            if not (0.01 <= f <= 0.99):
+                raise ValueError(f"{name}={f} must be in [0.01, 0.99]")
         if self.prob_range_lo > self.prob_range_hi:
             raise ValueError(
                 f"prob_range_lo ({self.prob_range_lo}) > prob_range_hi ({self.prob_range_hi})"
+            )
+        if self.prob_range_hi - self.prob_range_lo < 0.05:
+            raise ValueError(
+                f"range width ({self.prob_range_hi - self.prob_range_lo:.3f}) "
+                f"below minimum 0.05 — LLMs must express honest uncertainty"
             )
         if not (self.prob_range_lo <= self.model_prob_yes <= self.prob_range_hi):
             raise ValueError(
@@ -278,6 +290,8 @@ class ModelOutput:
             )
         if not self.catalyst or not self.catalyst.strip():
             raise ValueError("catalyst required")
+        if len(self.catalyst) > 140:
+            raise ValueError(f"catalyst too long ({len(self.catalyst)} > 140 chars)")
 
 
 # ---------------------------------------------------------------------------
