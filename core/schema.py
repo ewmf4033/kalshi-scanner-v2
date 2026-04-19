@@ -278,9 +278,12 @@ class ModelOutput:
             raise ValueError(
                 f"prob_range_lo ({self.prob_range_lo}) > prob_range_hi ({self.prob_range_hi})"
             )
-        if self.prob_range_hi - self.prob_range_lo < 0.05:
+        # Round to 4 decimals to avoid float comparison artifacts
+        # (e.g. 0.98 - 0.93 == 0.04999999999999993 in IEEE 754).
+        range_width = round(self.prob_range_hi - self.prob_range_lo, 4)
+        if range_width < 0.05:
             raise ValueError(
-                f"range width ({self.prob_range_hi - self.prob_range_lo:.3f}) "
+                f"range width ({range_width:.3f}) "
                 f"below minimum 0.05 — LLMs must express honest uncertainty"
             )
         if not (self.prob_range_lo <= self.model_prob_yes <= self.prob_range_hi):

@@ -93,6 +93,16 @@ class TestParseErrors:
         out, err = parse.parse_model_output(bad)
         assert out is None and "range width" in err
 
+    def test_range_exactly_five_percent_accepted(self):
+        """Regression: 0.98 - 0.93 == 0.04999999999999993 in IEEE 754.
+        Live scan 2026-04-19 had Claude emit this exact range; validator
+        must treat it as exactly 0.05 (pass) after rounding."""
+        ok = ('{"model_prob_yes": 0.96, "prob_range_lo": 0.93, "prob_range_hi": 0.98, '
+              '"confidence": "medium", "catalyst": "x", "category": "macro"}')
+        out, err = parse.parse_model_output(ok)
+        assert err is None, f"expected 0.05-wide range to pass, got: {err}"
+        assert out is not None
+
     def test_prob_below_floor(self):
         """< 0.01 violates hard floor."""
         bad = ('{"model_prob_yes": 0.005, "prob_range_lo": 0.001, "prob_range_hi": 0.05, '
