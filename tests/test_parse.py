@@ -52,7 +52,8 @@ class TestParseErrors:
 
     def test_invalid_json(self):
         out, err = parse.parse_model_output("{not json}")
-        assert out is None and "invalid JSON" in err
+        assert out is None
+        assert "no JSON found" in err or "invalid JSON" in err
 
     def test_non_object(self):
         out, err = parse.parse_model_output("[1,2,3]")
@@ -125,3 +126,48 @@ class TestStructuralGuarantees:
         assert err is None and out is not None
         assert not hasattr(out, "model")
         assert not hasattr(out, "timestamp")
+
+
+class TestEmbeddedJSON:
+    """LLMs (especially Claude with tools) emit JSON inside prose."""
+
+    def test_prose_then_fenced_json(self):
+        """The format Claude returned in live test — reasoning, then fenced JSON."""
+        raw = (
+            "Let me analyze this market.\n\n"
+            "Current price is X, strike is Y, so...\n\n"
+            f"```json\n{VALID}\n```\n\n"
+            "Hope this helps."
+        )
+        out, err = parse.parse_model_output(raw)
+        assert err is None, f"should parse embedded fenced JSON, got: {err}"
+        assert out.model_prob_yes == 0.3
+
+    def test_multiple_fenced_blocks_takes_last(self):
+        """If the LLM emits multiple fenced blocks, the LAST is the final answer."""
+        first = '{"some": "draft"}'
+        raw = (
+            f"First draft:\n```json\n{first}\n```\n\n"
+            f"Final answer:\n```json\n{VALID}\n```"
+        )
+        out, err = parse.parse_model_output(raw)
+        assert err is None
+        assert out.model_prob_yes == 0.3
+
+    def test_raw_brace_object_in_prose(self):
+        """No fences at all — just a {...} embedded in text."""
+        raw = f"My answer is {VALID} -- final."
+        out, err = parse.parse_model_output(raw)
+        assert err is None
+        assert out.model_prob_yes == 0.3
+
+    def test_nested_braces_handled(self):
+        """Brace counter must handle nested objects properly."""
+        with_nested = VALID.replace(
+            '"reasoning": "stepwise"',
+            '"reasoning": "contains {braces} and more {nested {deep}} text"'
+        )
+        raw = f"Analysis: {with_nested}"
+        out, err = parse.parse_model_output(raw)
+        # Nested braces inside STRING values should parse fine
+        assert err is None, f"got: {err}"

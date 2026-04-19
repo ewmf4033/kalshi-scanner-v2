@@ -22,21 +22,91 @@ from core.schema import ModelOutput, Confidence, Category
 
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL)
+# Match fenced JSON anywhere in the text (for LLMs that emit prose + fenced JSON)
+_EMBEDDED_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
 
 def strip_fences(text: str) -> str:
+    """Strip fences if the ENTIRE text is a fenced block. Idempotent otherwise."""
     text = text.strip()
     m = _FENCE_RE.match(text)
     return m.group(1).strip() if m else text
+
+
+def _extract_json(text: str) -> Optional[str]:
+    """Find the JSON object in text. Tries in order:
+       1. Whole text is valid JSON
+       2. Whole text is a fenced block
+       3. Fenced JSON embedded in prose (takes the LAST one — it's the final answer)
+       4. Raw {...} object embedded in prose (brace-counting, LAST occurrence)
+    """
+    text = text.strip()
+    if not text:
+        return None
+
+    # Fast path: already valid JSON
+    try:
+        json.loads(text)
+        return text
+    except json.JSONDecodeError:
+        pass
+
+    # Try whole-text fence strip
+    stripped = strip_fences(text)
+    if stripped != text:
+        try:
+            json.loads(stripped)
+            return stripped
+        except json.JSONDecodeError:
+            pass
+
+    # Embedded fenced blocks — last match (Claude's final answer after reasoning)
+    matches = list(_EMBEDDED_FENCE_RE.finditer(text))
+    if matches:
+        candidate = matches[-1].group(1).strip()
+        try:
+            json.loads(candidate)
+            return candidate
+        except json.JSONDecodeError:
+            pass
+
+    # Last-resort: brace-counted scan for { ... } — find the last balanced object
+    best = None
+    i = 0
+    while i < len(text):
+        if text[i] == "{":
+            depth = 0
+            start = i
+            for j in range(i, len(text)):
+                if text[j] == "{":
+                    depth += 1
+                elif text[j] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        candidate = text[start:j+1]
+                        try:
+                            json.loads(candidate)
+                            best = candidate  # keep LAST successful parse
+                        except json.JSONDecodeError:
+                            pass
+                        i = j
+                        break
+            else:
+                break
+        i += 1
+    return best
 
 
 def parse_model_output(raw: str) -> Tuple[Optional[ModelOutput], Optional[str]]:
     if not raw or not raw.strip():
         return None, "empty response"
 
-    text = strip_fences(raw)
+    json_text = _extract_json(raw)
+    if json_text is None:
+        return None, f"no JSON found in response (preview: {raw[:150]!r})"
+
     try:
-        obj = json.loads(text)
+        obj = json.loads(json_text)
     except json.JSONDecodeError as e:
         return None, f"invalid JSON: {e}"
 

@@ -44,16 +44,35 @@ GROK_MODEL   = "grok-4-fast-reasoning"
 GEMINI_MODEL = "gemini-2.0-flash"
 
 # LLM behavior tuning
-MAX_TOKENS = 1200       # Room for reasoning + JSON; 800 was tight in testing
-TIMEOUT_SECONDS = 90    # Reasoning models can take time
+MAX_TOKENS_NO_TOOLS = 1500      # Room for reasoning + JSON (no search)
+MAX_TOKENS_WITH_TOOLS = 4000    # Claude needs room after search results
+TIMEOUT_SECONDS = 180           # Web search adds latency
 
 
 # ---------------------------------------------------------------------------
 # Claude — primary. Uses Anthropic SDK.
 # ---------------------------------------------------------------------------
 
+def _date_preamble() -> str:
+    """Inject today's date so LLMs don't fall back to training cutoffs.
+    Without this, LLMs misread market close dates as years in the future."""
+    from datetime import datetime, timezone
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return f"TODAY'S DATE (UTC): {today}\n\n"
+
+
 def call_claude(em: EnrichedMarket) -> Optional[ModelOutput]:
-    """Score a market via Claude. Returns None on any failure."""
+    """Score a market via Claude with web_search enabled.
+
+    Web search is critical — LLM training cutoffs cause models to misread
+    recent dates as far future. With web search, Claude autonomously
+    fetches current spot prices, AAA gas averages, CPI prints, etc.
+    Verified live on 2026-04-18: Claude searched 3 times, found
+    correct AAA gas price, produced well-calibrated 72% probability
+    on a market trading at 77.5%.
+
+    Returns None on any failure.
+    """
     try:
         import anthropic
     except ImportError:
@@ -65,13 +84,18 @@ def call_claude(em: EnrichedMarket) -> Optional[ModelOutput]:
         log.error(json.dumps({"phase": "call_claude", "err": "ANTHROPIC_API_KEY not set"}))
         return None
 
-    prompt = render_prompt(em)
+    prompt = _date_preamble() + render_prompt(em)
     try:
         client = anthropic.Anthropic(api_key=api_key, timeout=TIMEOUT_SECONDS)
         response = client.messages.create(
             model=CLAUDE_MODEL,
-            max_tokens=MAX_TOKENS,
+            max_tokens=MAX_TOKENS_WITH_TOOLS,
             messages=[{"role": "user", "content": prompt}],
+            tools=[{
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "max_uses": 5,
+            }],
         )
     except Exception as e:
         log.error(json.dumps({
@@ -81,23 +105,27 @@ def call_claude(em: EnrichedMarket) -> Optional[ModelOutput]:
         }))
         return None
 
-    # Claude returns a list of content blocks; find the first text block
+    # Claude with tools returns multiple blocks: server_tool_use, tool_result,
+    # and text. Reasoning is interleaved with tool calls, JSON is usually at
+    # the very end. Join all text and let parse._extract_json find it.
     text_blocks = [b.text for b in response.content if getattr(b, "type", None) == "text"]
     if not text_blocks:
         log.error(json.dumps({
             "phase": "call_claude",
             "ticker": em.ticker,
             "err": "no text block in response",
+            "stop_reason": response.stop_reason,
         }))
         return None
 
-    output, parse_err = parse_model_output(text_blocks[0])
+    joined = "\n".join(text_blocks)
+    output, parse_err = parse_model_output(joined)
     if output is None:
         log.error(json.dumps({
             "phase": "call_claude",
             "ticker": em.ticker,
             "err": f"parse failed: {parse_err}",
-            "raw_preview": text_blocks[0][:200],
+            "raw_preview": joined[-400:],  # tail is where JSON lives
         }))
         return None
 
@@ -121,7 +149,7 @@ def call_grok(em: EnrichedMarket) -> Optional[ModelOutput]:
         log.error(json.dumps({"phase": "call_grok", "err": "XAI_API_KEY not set"}))
         return None
 
-    prompt = render_prompt(em)
+    prompt = _date_preamble() + render_prompt(em)
     try:
         client = OpenAI(
             base_url="https://api.x.ai/v1",
@@ -131,7 +159,7 @@ def call_grok(em: EnrichedMarket) -> Optional[ModelOutput]:
         response = client.chat.completions.create(
             model=GROK_MODEL,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=MAX_TOKENS,
+            max_tokens=MAX_TOKENS_NO_TOOLS,
         )
     except Exception as e:
         log.error(json.dumps({
@@ -173,7 +201,7 @@ def call_gemini(em: EnrichedMarket) -> Optional[ModelOutput]:
         log.error(json.dumps({"phase": "call_gemini", "err": "GOOGLE_API_KEY not set"}))
         return None
 
-    prompt = render_prompt(em)
+    prompt = _date_preamble() + render_prompt(em)
     try:
         client = genai.Client(api_key=api_key)
         response = client.models.generate_content(
@@ -181,7 +209,7 @@ def call_gemini(em: EnrichedMarket) -> Optional[ModelOutput]:
             contents=prompt,
             config=genai_types.GenerateContentConfig(
                 response_mime_type="application/json",
-                max_output_tokens=MAX_TOKENS,
+                max_output_tokens=MAX_TOKENS_NO_TOOLS,
             ),
         )
     except Exception as e:
