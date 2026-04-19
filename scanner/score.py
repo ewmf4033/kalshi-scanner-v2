@@ -56,6 +56,7 @@ from scanner.price_math import devig_multiplicative
 from synth.consensus import combine_scan
 from alert.format import build_alerts
 from alert.telegram import send_alerts as telegram_send_alerts
+from alert.digest import format_digest, send_digest
 
 
 log = logging.getLogger(__name__)
@@ -295,6 +296,25 @@ def run_scan(
 
     # Send deliverable tiers to Telegram (CONSENSUS + CLAUDE_SOLO)
     telegram_result = telegram_send_alerts(alerts)
+
+    # Send daily digest summary (single message, plain text).
+    # Failure isolated — digest send error doesn't affect scan result.
+    try:
+        digest_msg = format_digest(
+            scan_id=scan_id,
+            scan_ts_utc=now_iso,
+            candidates_considered=len(enriched),
+            candidates_selected=len(candidates),
+            predictions=preds,
+            alerts=alerts,
+            failures_by_model=failures,
+        )
+        digest_sent = send_digest(digest_msg)
+        log.info(json.dumps({"phase": "run_scan", "stage": "digest",
+                             "sent": digest_sent}))
+    except Exception as e:
+        log.error(json.dumps({"phase": "run_scan", "stage": "digest",
+                              "err": f"{type(e).__name__}: {str(e)[:200]}"}))
 
     elapsed = time.time() - start
     result = ScanResult(
