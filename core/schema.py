@@ -85,6 +85,7 @@ class MarketStatus(str, Enum):
     ACTIVE = "active"           # Trading, what v1 would have called "open"
     OPEN = "open"               # Legacy / alternate
     INACTIVE = "inactive"       # Listed but not currently trading
+    CLOSED = "closed"           # Trading window closed, awaiting settlement
     SETTLED = "settled"
     FINALIZED = "finalized"
     HALTED = "halted"
@@ -278,13 +279,23 @@ class ModelOutput:
             raise ValueError(
                 f"prob_range_lo ({self.prob_range_lo}) > prob_range_hi ({self.prob_range_hi})"
             )
-        # Round to 4 decimals to avoid float comparison artifacts
-        # (e.g. 0.98 - 0.93 == 0.04999999999999993 in IEEE 754).
+        # Round to 4 decimals to avoid float comparison artifacts.
+        # Minimum width depends on where the point estimate sits:
+        #   - "Interior" points (0.06-0.94): require ≥0.04 width to enforce
+        #     honest uncertainty — LLMs shouldn't claim they know X is
+        #     exactly 0.85 with a 2pp range.
+        #   - "Near-edge" points (≤0.05 or ≥0.95): allow ≥0.02 width.
+        #     The LLM is pinned against the [0.01, 0.99] hard floor and
+        #     can't go below 0.01 even when it has high confidence.
+        #     Example: point=0.02, range=[0.01, 0.04] is honest at edge.
         range_width = round(self.prob_range_hi - self.prob_range_lo, 4)
-        if range_width < 0.05:
+        is_near_edge = self.model_prob_yes <= 0.05 or self.model_prob_yes >= 0.95
+        min_width = 0.02 if is_near_edge else 0.04
+        if range_width < min_width:
             raise ValueError(
                 f"range width ({range_width:.3f}) "
-                f"below minimum 0.05 — LLMs must express honest uncertainty"
+                f"below minimum {min_width:.2f} for point={self.model_prob_yes:.2f} "
+                f"— LLMs must express honest uncertainty"
             )
         if not (self.prob_range_lo <= self.model_prob_yes <= self.prob_range_hi):
             raise ValueError(

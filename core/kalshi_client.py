@@ -163,6 +163,7 @@ _STATUS_MAP = {
     "active": MarketStatus.ACTIVE,   # Live-verified: Kalshi returns "active" for trading markets
     "open": MarketStatus.OPEN,       # Kept for safety / legacy
     "inactive": MarketStatus.INACTIVE,  # Event exists but market not yet/not currently trading
+    "closed": MarketStatus.CLOSED,      # Trading closed, awaiting settlement
     "settled": MarketStatus.SETTLED,
     "finalized": MarketStatus.FINALIZED,
     "halted": MarketStatus.HALTED,
@@ -201,6 +202,7 @@ def parse_market(raw: dict, captured_at_utc: str) -> Optional[MarketSnapshot]:
     # listings include markets that haven't opened yet or have closed.
     _NON_TRADEABLE = {
         MarketStatus.INACTIVE,
+        MarketStatus.CLOSED,
         MarketStatus.SETTLED,
         MarketStatus.FINALIZED,
         MarketStatus.HALTED,

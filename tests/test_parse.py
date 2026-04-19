@@ -103,6 +103,31 @@ class TestParseErrors:
         assert err is None, f"expected 0.05-wide range to pass, got: {err}"
         assert out is not None
 
+    def test_near_edge_low_allows_narrow_range(self):
+        """Regression: point=0.02 has only 0.01-0.99 to play with. Live scan
+        2026-04-19 had Claude emit point=0.02, [0.01, 0.04] (width 0.03)
+        which the strict 0.04 minimum rejected. Edge-aware minimum (0.02
+        near edges) accepts it."""
+        ok = ('{"model_prob_yes": 0.02, "prob_range_lo": 0.01, "prob_range_hi": 0.04, '
+              '"confidence": "high", "catalyst": "x", "category": "tech"}')
+        out, err = parse.parse_model_output(ok)
+        assert err is None, f"expected near-edge narrow range to pass, got: {err}"
+
+    def test_near_edge_high_allows_narrow_range(self):
+        """Same logic for high-edge: point=0.97, [0.95, 0.98] is acceptable."""
+        ok = ('{"model_prob_yes": 0.97, "prob_range_lo": 0.95, "prob_range_hi": 0.98, '
+              '"confidence": "high", "catalyst": "x", "category": "tech"}')
+        out, err = parse.parse_model_output(ok)
+        assert err is None, f"expected near-edge narrow range to pass, got: {err}"
+
+    def test_interior_still_strict(self):
+        """Interior points still require ≥0.04 — no false confidence in middle."""
+        bad = ('{"model_prob_yes": 0.50, "prob_range_lo": 0.49, "prob_range_hi": 0.52, '
+               '"confidence": "high", "catalyst": "x", "category": "macro"}')
+        out, err = parse.parse_model_output(bad)
+        assert out is None, "interior 3pp range should be rejected"
+        assert "below minimum" in err
+
     def test_prob_below_floor(self):
         """< 0.01 violates hard floor."""
         bad = ('{"model_prob_yes": 0.005, "prob_range_lo": 0.001, "prob_range_hi": 0.05, '

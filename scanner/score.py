@@ -53,6 +53,9 @@ from core.schema import (
 )
 from scanner import ingest, models, render
 from scanner.price_math import devig_multiplicative
+from synth.consensus import combine_scan
+from alert.format import build_alerts
+from alert.telegram import send_alerts as telegram_send_alerts
 
 
 log = logging.getLogger(__name__)
@@ -64,6 +67,7 @@ CANDIDATE_MAX_DAYS_TO_CLOSE = 14
 MAX_WORKERS = 10
 PROMPT_VERSION = "scanner-v2.0"
 RAW_SCANS_DIR = Path("raw/scans")
+RAW_ALERTS_DIR = Path("raw/alerts")
 
 
 # --- Model dispatch table ---------------------------------------------------
@@ -83,8 +87,16 @@ class ScanResult:
     candidates_selected: int
     predictions_by_model: dict     # {"claude": 48, "grok": 50, "gemini_shadow": 50}
     failures_by_model: dict        # {"claude": 2, ...}
-    output_path: str
+    predictions_path: str
+    alerts_path: str
+    alert_counts: dict             # {"consensus": 0, "claude_solo": 5, ...}
+    telegram_result: dict          # {"sent": 5, "skipped": 45, "failed": 0}
     elapsed_seconds: float
+
+    @property
+    def output_path(self) -> str:
+        """Backwards-compat alias for predictions_path."""
+        return self.predictions_path
 
 
 # --- Candidate selection ----------------------------------------------------
@@ -218,6 +230,15 @@ def write_predictions(preds: List[Prediction], path: Path) -> None:
             f.write(json.dumps(p.to_dict(), default=str) + "\n")
 
 
+def write_alerts(alerts, path: Path) -> None:
+    """Append-only JSONL. Each line is an Alert.to_dict().
+    Persists ALL tiers including NONE — full audit trail."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w") as f:
+        for a in alerts:
+            f.write(json.dumps(a.to_dict(), default=str) + "\n")
+
+
 # --- Top-level: one scan ----------------------------------------------------
 
 def run_scan(
@@ -256,9 +277,24 @@ def run_scan(
     failures = {mn.value: len(candidates) - by_model[mn.value]
                 for mn, _, _ in _MODEL_DISPATCH}
 
-    fname = now_utc.strftime("%Y-%m-%d_%H%M_scan.jsonl")
-    out_path = RAW_SCANS_DIR / fname
-    write_predictions(preds, out_path)
+    pred_fname = now_utc.strftime("%Y-%m-%d_%H%M_scan.jsonl")
+    pred_path = RAW_SCANS_DIR / pred_fname
+    write_predictions(preds, pred_path)
+
+    # Build & deliver alerts
+    log.info(json.dumps({"phase": "run_scan", "stage": "alerts"}))
+    decisions = combine_scan(preds)
+    alerts = build_alerts(decisions, preds)
+    alert_fname = now_utc.strftime("%Y-%m-%d_%H%M_alerts.jsonl")
+    alert_path = RAW_ALERTS_DIR / alert_fname
+    write_alerts(alerts, alert_path)
+
+    # Per-tier counts (using values not enums for cleaner JSON logging)
+    from collections import Counter
+    alert_counts = dict(Counter(a.tier.value for a in alerts))
+
+    # Send deliverable tiers to Telegram (CONSENSUS + CLAUDE_SOLO)
+    telegram_result = telegram_send_alerts(alerts)
 
     elapsed = time.time() - start
     result = ScanResult(
@@ -268,12 +304,18 @@ def run_scan(
         candidates_selected=len(candidates),
         predictions_by_model=by_model,
         failures_by_model=failures,
-        output_path=str(out_path),
+        predictions_path=str(pred_path),
+        alerts_path=str(alert_path),
+        alert_counts=alert_counts,
+        telegram_result=telegram_result,
         elapsed_seconds=elapsed,
     )
     log.info(json.dumps({"phase": "run_scan", "stage": "done",
                          "elapsed_s": round(elapsed, 1),
                          "preds_by_model": by_model,
                          "failures": failures,
-                         "path": str(out_path)}))
+                         "alert_counts": alert_counts,
+                         "telegram": telegram_result,
+                         "predictions": str(pred_path),
+                         "alerts": str(alert_path)}))
     return result
