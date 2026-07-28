@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +13,7 @@ import websockets
 
 from .kalshi_api import KalshiClient
 from .models import BucketContract, ThresholdContract, WeatherRule
-from .observations import NWSObservationClient
+from .observations import NWSObservationClient, local_day_window
 from .runner import MarketDefinition, WeatherResearchRunner
 from .storage import ResearchStore
 from .ws_protocol import SequenceGapError, orderbook_subscription
@@ -33,10 +34,6 @@ class LiveConfig:
             tickers.extend(c.ticker for c in definition.thresholds)
             tickers.extend(c.ticker for c in definition.buckets)
         return sorted(set(tickers))
-
-    @property
-    def station_ids(self) -> list[str]:
-        return sorted({d.rule.station_id for d in self.definitions.values()})
 
 
 def load_config(path: str | Path) -> LiveConfig:
@@ -103,14 +100,21 @@ class LiveWeatherLogger:
 
     async def _observation_loop(self) -> None:
         while not self._stop.is_set():
-            for station_id in self.config.station_ids:
+            receipt_time = datetime.now(timezone.utc)
+            for series_ticker, definition in self.config.definitions.items():
+                rule = definition.rule
                 try:
-                    observation = await asyncio.to_thread(self.nws.latest, station_id)
-                    self.runner.ingest_observation(
-                        station_id, observation.temperature_f, observation.observed_at
+                    start, end = local_day_window(receipt_time, rule.timezone)
+                    rows = await asyncio.to_thread(self.nws.range, rule.station_id, start, end)
+                    self.runner.ingest_day_observations(
+                        series_ticker, rows, receipt_time=receipt_time
                     )
                 except Exception:
-                    log.exception("observation poll failed for %s", station_id)
+                    log.exception(
+                        "full-day observation poll failed for %s/%s",
+                        series_ticker,
+                        rule.station_id,
+                    )
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=self.config.poll_seconds)
             except asyncio.TimeoutError:
@@ -142,7 +146,10 @@ def main() -> None:
     parser.add_argument("--config", required=True)
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args()
-    logging.basicConfig(level=getattr(logging, args.log_level.upper()), format="%(asctime)s %(levelname)s %(message)s")
+    logging.basicConfig(
+        level=getattr(logging, args.log_level.upper()),
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
     logger = LiveWeatherLogger(load_config(args.config))
     try:
         asyncio.run(logger.run())
