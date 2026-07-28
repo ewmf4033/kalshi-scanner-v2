@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -22,13 +23,15 @@ def rule():
     )
 
 
-def market(ticker, *, floor=None, cap=None, status="open", provisional=False):
+def market(ticker, *, floor=None, cap=None, status="open", provisional=False, close_hours=24):
+    close_time = (datetime.now(timezone.utc) + timedelta(hours=close_hours)).isoformat()
     return {
         "ticker": ticker,
         "status": status,
         "floor_strike": floor,
         "cap_strike": cap,
         "is_provisional": provisional,
+        "close_time": close_time,
         "title": "diagnostic only",
     }
 
@@ -56,6 +59,18 @@ def test_discovery_fails_closed_when_nothing_is_usable():
         discover_definition(rule(), [market("BAD")])
 
 
+def test_discovery_horizon_excludes_far_future_markets():
+    now = datetime.now(timezone.utc)
+    result = discover_definition(
+        rule(),
+        [market("NEAR", floor=90, close_hours=24), market("FAR", floor=91, close_hours=240)],
+        now=now,
+        horizon_hours=72,
+    )
+    assert result.accepted_tickers == ("NEAR",)
+    assert ("FAR", "outside discovery horizon") in result.rejected
+
+
 class FakeKalshi:
     websocket_url = "wss://example.invalid"
 
@@ -74,6 +89,7 @@ def test_catalog_roll_replaces_tickers_and_clears_books(tmp_path):
         database_path=str(tmp_path / "research.sqlite"),
         auto_discover=True,
         discovery_seconds=30,
+        discovery_horizon_hours=72,
     )
     logger = LiveWeatherLogger(config, kalshi=fake)
     assert asyncio.run(logger._refresh_catalog()) is True
@@ -95,6 +111,7 @@ def test_catalog_unchanged_does_not_reset_state(tmp_path):
         database_path=str(tmp_path / "research.sqlite"),
         auto_discover=True,
         discovery_seconds=30,
+        discovery_horizon_hours=72,
     )
     logger = LiveWeatherLogger(config, kalshi=fake)
     assert asyncio.run(logger._refresh_catalog()) is True
