@@ -69,4 +69,4 @@ Run:
 pytest -q tests/test_weather_research.py tests/test_weather_live.py
 ```
 
-The focused tests cover unified YES pricing, intraday-safe certainty direction, bucket elimination, comparator-aware monotonicity, depth-aware fee rounding, error-derived thresholds, climatological-day resets, full-day observation recomputation, receipt-time quote aging, reconciliation cohorts, decimal half-up boundaries, persistence, and sequence-gap poisoning.
+Current branch verification: 25 focused tests pass. The focused suite covers unified YES pricing, intraday-safe certainty direction, bucket elimination, comparator-aware monotonicity, depth-aware fee rounding, error-derived thresholds, climatological-day resets, full-day observation recomputation, receipt-time quote aging, reconciliation cohorts, decimal half-up boundaries, persistence, and sequence-gap poisoning.
