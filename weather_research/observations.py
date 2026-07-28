@@ -186,7 +186,7 @@ def extreme(values: list[float], observation_type: str) -> float:
     raise ValueError(f"unsupported observation_type: {observation_type}")
 
 
-def recompute_candidate_extremes(
+def recompute_all_candidate_extremes(
     observations: list[StationObservation], observation_type: str
 ) -> tuple[float, float, float]:
     if not observations:
@@ -197,6 +197,14 @@ def recompute_candidate_extremes(
         extreme([row.temperature_f_round_c for row in candidates], observation_type),
         extreme([row.temperature_f_round_cff for row in candidates], observation_type),
     )
+
+
+def recompute_candidate_extremes(
+    observations: list[StationObservation], observation_type: str
+) -> tuple[float, float]:
+    """Backward-compatible two-path view; new code should use the all-path helper."""
+    cf, c, _ = recompute_all_candidate_extremes(observations, observation_type)
+    return cf, c
 
 
 def recompute_day_extreme(observations: list[StationObservation], observation_type: str, rounding: str) -> float:
