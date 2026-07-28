@@ -40,31 +40,85 @@ def _timestamp(value: Any) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def _required_bool(market: dict[str, Any], field: str) -> bool:
+    value = market.get(field)
+    if not isinstance(value, bool):
+        raise DiscoveryError(f"strike_type=between requires explicit boolean {field}")
+    return value
+
+
 def market_to_contract(market: dict[str, Any]):
-    """Map only unambiguous structured strikes; never parse titles as authority."""
+    """Map only explicit structured strike semantics; never infer from titles or null fields."""
     ticker = str(market.get("ticker") or "")
     if not ticker:
         raise DiscoveryError("market is missing ticker")
     if market.get("is_provisional") is True:
         raise DiscoveryError("provisional market")
 
+    strike_type = str(market.get("strike_type") or "").strip().lower()
     floor = _number(market.get("floor_strike"))
     cap = _number(market.get("cap_strike"))
-    if floor is None and cap is None:
-        raise DiscoveryError("missing structured floor/cap strike")
-    if floor is not None and cap is not None:
+
+    if strike_type == "greater":
+        if floor is None or cap is not None:
+            raise DiscoveryError("greater requires floor_strike only")
+        return ThresholdContract(ticker=ticker, comparator=">", threshold=floor)
+    if strike_type == "greater_or_equal":
+        if floor is None or cap is not None:
+            raise DiscoveryError("greater_or_equal requires floor_strike only")
+        return ThresholdContract(ticker=ticker, comparator=">=", threshold=floor)
+    if strike_type == "less":
+        if cap is None or floor is not None:
+            raise DiscoveryError("less requires cap_strike only")
+        return ThresholdContract(ticker=ticker, comparator="<", threshold=cap)
+    if strike_type == "less_or_equal":
+        if cap is None or floor is not None:
+            raise DiscoveryError("less_or_equal requires cap_strike only")
+        return ThresholdContract(ticker=ticker, comparator="<=", threshold=cap)
+    if strike_type == "between":
+        if floor is None or cap is None:
+            raise DiscoveryError("between requires floor_strike and cap_strike")
         if floor > cap:
             raise DiscoveryError("floor strike exceeds cap strike")
         return BucketContract(
             ticker=ticker,
             lower=floor,
             upper=cap,
-            lower_inclusive=True,
-            upper_inclusive=True,
+            lower_inclusive=_required_bool(market, "lower_inclusive"),
+            upper_inclusive=_required_bool(market, "upper_inclusive"),
         )
-    if floor is not None:
-        return ThresholdContract(ticker=ticker, comparator=">=", threshold=floor)
-    return ThresholdContract(ticker=ticker, comparator="<=", threshold=cap)
+    raise DiscoveryError(f"unsupported or missing strike_type {strike_type!r}")
+
+
+def validate_bucket_partition(buckets: Iterable[BucketContract]) -> None:
+    """Fail closed when adjacent integer-settlement buckets overlap or leave a gap."""
+    ordered = sorted(
+        buckets,
+        key=lambda row: (
+            float("-inf") if row.lower is None else row.lower,
+            float("inf") if row.upper is None else row.upper,
+            row.ticker,
+        ),
+    )
+    for bucket in ordered:
+        if bucket.lower is None or bucket.upper is None:
+            raise DiscoveryError(f"bucket {bucket.ticker} must have finite bounds")
+        if not float(bucket.lower).is_integer() or not float(bucket.upper).is_integer():
+            raise DiscoveryError(f"bucket {bucket.ticker} has non-integer weather bounds")
+    for left, right in zip(ordered, ordered[1:]):
+        assert left.upper is not None and right.lower is not None
+        delta = right.lower - left.upper
+        if delta < 0:
+            raise DiscoveryError(f"bucket overlap: {left.ticker} and {right.ticker}")
+        if delta == 0:
+            if left.upper_inclusive == right.lower_inclusive:
+                kind = "overlap" if left.upper_inclusive else "gap"
+                raise DiscoveryError(f"bucket boundary {kind} at {left.upper}: {left.ticker}/{right.ticker}")
+        elif delta == 1:
+            if not (left.upper_inclusive and right.lower_inclusive):
+                raise DiscoveryError(f"integer bucket gap between {left.ticker} and {right.ticker}")
+        else:
+            raise DiscoveryError(f"bucket gap between {left.ticker} and {right.ticker}")
 
 
 def discover_definition(
@@ -122,6 +176,8 @@ def discover_definition(
         float("inf") if row.upper is None else row.upper,
         row.ticker,
     ))
+    if len(buckets) > 1:
+        validate_bucket_partition(buckets)
     definition = MarketDefinition(rule=rule, thresholds=tuple(thresholds), buckets=tuple(buckets))
     accepted = tuple(sorted(seen))
     if require_nonempty and not accepted:
@@ -133,6 +189,6 @@ def discover_definition(
 def discover_all(kalshi, definitions: dict[str, MarketDefinition]) -> dict[str, DiscoveryResult]:
     results: dict[str, DiscoveryResult] = {}
     for series_ticker, existing in definitions.items():
-        markets = kalshi.list_markets(series_ticker=series_ticker)
+        markets = kalshi.list_markets(series_ticker=series_ticker, statuses=("open", "unopened"))
         results[series_ticker] = discover_definition(existing.rule, markets)
     return results
