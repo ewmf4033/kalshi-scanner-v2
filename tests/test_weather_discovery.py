@@ -38,6 +38,7 @@ def market(
     provisional=False,
     lower_inclusive=None,
     upper_inclusive=None,
+    close_time="2099-01-01T00:00:00Z",
 ):
     row = {
         "ticker": ticker,
@@ -46,6 +47,7 @@ def market(
         "floor_strike": floor,
         "cap_strike": cap,
         "is_provisional": provisional,
+        "close_time": close_time,
         "title": "diagnostic only",
     }
     if lower_inclusive is not None:
