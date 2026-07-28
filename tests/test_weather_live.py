@@ -9,11 +9,17 @@ from weather_research.observations import (
     apply_rule_rounding,
     climatological_date,
     local_day_window,
+    recompute_candidate_extremes,
     recompute_day_extreme,
+    rounding_candidates,
 )
 from weather_research.runner import MarketDefinition, WeatherResearchRunner
 from weather_research.storage import ResearchStore
 from weather_research.ws_protocol import SequenceGapError
+
+
+def f_to_c(value: float) -> float:
+    return (value - 32) * 5 / 9
 
 
 def snapshot(seq=1):
@@ -50,15 +56,25 @@ def test_delta_fixed_point_and_gap_poisoning():
     assert state.books == {}
 
 
+def reconcile(runner, *, station_id, date, cf, c, selected, settled, signal=False, fill=False):
+    runner.reconcile_day(
+        station_id=station_id,
+        date=date,
+        parsed_cf_value=cf,
+        parsed_c_value=c,
+        selected_parsed_value=selected,
+        settled_value=settled,
+        signal_fired=signal,
+        would_have_filled=fill,
+    )
+
+
 def test_runner_threshold_is_derived_from_reconciliation_evidence(tmp_path):
     store = ResearchStore(tmp_path / "research.sqlite")
     runner = WeatherResearchRunner({}, store, safety_margin_cents=0)
     empty_gap = runner.required_gap(90, 100)
     for day in range(1, 241):
-        runner.reconcile_day(
-            station_id="KNYC", date=f"2026-01-{day:03d}", parsed_value=80,
-            settled_value=80, signal_fired=False, would_have_filled=False,
-        )
+        reconcile(runner, station_id="KNYC", date=f"2026-01-{day:03d}", cf=80, c=80, selected=80, settled=80)
     powered_gap = runner.required_gap(90, 100)
     assert empty_gap > 100
     assert powered_gap < 3
@@ -68,17 +84,24 @@ def test_runner_threshold_is_derived_from_reconciliation_evidence(tmp_path):
 def test_reconciliation_cohorts_are_separate(tmp_path):
     store = ResearchStore(tmp_path / "research.sqlite")
     runner = WeatherResearchRunner({}, store)
-    runner.reconcile_day(
-        station_id="A", date="2026-07-01", parsed_value=80, settled_value=80,
-        signal_fired=False, would_have_filled=False,
-    )
-    runner.reconcile_day(
-        station_id="A", date="2026-07-02", parsed_value=80, settled_value=81,
-        signal_fired=True, would_have_filled=True,
-    )
+    reconcile(runner, station_id="A", date="2026-07-01", cf=80, c=80, selected=80, settled=80)
+    reconcile(runner, station_id="A", date="2026-07-02", cf=80, c=80, selected=80, settled=81, signal=True, fill=True)
     bounds = runner.reconciliation_bounds()
     assert set(bounds) == {"baseline", "signal", "fill"}
     assert bounds["signal"] == bounds["fill"]
+    store.close()
+
+
+def test_reconciliation_preserves_both_rounding_hypotheses(tmp_path):
+    store = ResearchStore(tmp_path / "research.sqlite")
+    runner = WeatherResearchRunner({}, store)
+    reconcile(runner, station_id="KNYC", date="2026-07-01", cf=90, c=89.6, selected=90, settled=90)
+    row = store.conn.execute(
+        "SELECT parsed_cf_tenths,parsed_c_tenths,settled_tenths,agreed_cf,agreed_c FROM reconciliations"
+    ).fetchone()
+    assert row == (900, 896, 900, 1, 0)
+    assert store.reconciliation_counts(candidate="cf") == (1, 0)
+    assert store.reconciliation_counts(candidate="c") == (1, 1)
     store.close()
 
 
@@ -89,7 +112,7 @@ def test_observation_and_book_emit_read_only_signal(tmp_path):
         {"S": MarketDefinition(rule, thresholds=(ThresholdContract("T", ">=", 80),))}, store
     )
     runner.ingest_book_message(snapshot())
-    signals = runner.ingest_observation("KNYC", 81, datetime.now(timezone.utc))
+    signals = runner.ingest_observation("KNYC", f_to_c(81), datetime.now(timezone.utc))
     assert signals and signals[0].ticker == "T"
     assert store.conn.execute("SELECT COUNT(*) FROM signals").fetchone()[0] == 1
     store.close()
@@ -104,8 +127,8 @@ def test_running_extreme_resets_by_local_climatological_date(tmp_path):
     runner.ingest_book_message(snapshot())
     day_one = datetime(2026, 7, 27, 20, 0, tzinfo=timezone.utc)
     day_two = datetime(2026, 7, 28, 5, 5, tzinfo=timezone.utc)
-    runner.ingest_observation("KNYC", 95, day_one)
-    signals = runner.ingest_observation("KNYC", 68, day_two)
+    runner.ingest_observation("KNYC", f_to_c(95), day_one)
+    signals = runner.ingest_observation("KNYC", f_to_c(68), day_two)
     assert climatological_date(day_one, rule.timezone) != climatological_date(day_two, rule.timezone)
     assert runner.running_extremes[("S", climatological_date(day_two, rule.timezone))] == 68
     assert signals == []
@@ -136,7 +159,7 @@ def test_lst_runner_keeps_0030_edt_in_previous_climate_day(tmp_path):
     )
     runner.ingest_book_message(snapshot())
     before_lst_midnight = datetime(2026, 7, 28, 4, 30, tzinfo=timezone.utc)
-    runner.ingest_observation("KNYC", 95, before_lst_midnight)
+    runner.ingest_observation("KNYC", f_to_c(95), before_lst_midnight)
     assert runner.current_dates["S"].isoformat() == "2026-07-27"
     store.close()
 
@@ -158,6 +181,40 @@ def test_full_day_recompute_recovers_missed_peak():
     assert recompute_day_extreme(rows, "daily_high", "nearest_int") == 95
 
 
+def test_candidate_extremes_are_computed_independently():
+    rows = [
+        StationObservation("KNYC", datetime(2026, 7, 27, 18, tzinfo=timezone.utc), 32.2),
+        StationObservation("KNYC", datetime(2026, 7, 27, 19, tzinfo=timezone.utc), 32.4),
+    ]
+    cf, c = recompute_candidate_extremes(rows, "daily_high")
+    assert cf == 90
+    assert c == 89.6
+
+
+def test_raw_celsius_and_both_candidate_extremes_are_persisted(tmp_path):
+    store = ResearchStore(tmp_path / "research.sqlite")
+    rule = WeatherRule("S", "KNYC", "America/New_York", "daily_high", "nearest_int", "final", "NWS")
+    runner = WeatherResearchRunner({"S": MarketDefinition(rule)}, store)
+    rows = [
+        StationObservation("KNYC", datetime(2026, 7, 27, 18, tzinfo=timezone.utc), 32.2),
+        StationObservation("KNYC", datetime(2026, 7, 27, 19, tzinfo=timezone.utc), 32.4),
+    ]
+    runner.ingest_day_observations("S", rows)
+    row = store.conn.execute(
+        "SELECT temperature_c,temperature_f_round_cf,temperature_f_round_c,running_extreme_cf,running_extreme_c FROM observations"
+    ).fetchone()
+    assert row[0] == 32.4
+    assert row[1:] == (90.0, 89.6, 90.0, 89.6)
+    store.close()
+
+
+def test_rounding_candidates_keep_raw_source():
+    row = rounding_candidates(32.2)
+    assert row.temperature_c == 32.2
+    assert row.temperature_f_round_cf == 90
+    assert row.temperature_f_round_c == 89.6
+
+
 def test_rule_rounding_is_applied_at_signal_boundary():
     assert apply_rule_rounding(89.996, "nearest_int") == 90
     assert apply_rule_rounding(89.996, "floor") == 89
@@ -174,7 +231,7 @@ def test_quote_survival_uses_receipt_time_not_stale_observation_time(tmp_path):
     )
     runner.ingest_book_message(snapshot())
     stale_observed_at = datetime.now(timezone.utc) - timedelta(minutes=8)
-    runner.ingest_observation("KNYC", 81, stale_observed_at)
+    runner.ingest_observation("KNYC", f_to_c(81), stale_observed_at)
     age = store.conn.execute("SELECT quote_age_seconds FROM signals ORDER BY id DESC LIMIT 1").fetchone()[0]
     assert age < 1
     store.close()
