@@ -21,6 +21,29 @@ class StationObservation:
         return self.temperature_c * 9 / 5 + 32
 
 
+@dataclass(frozen=True)
+class RoundingCandidates:
+    """Lossless source plus the two CLI rounding hypotheses."""
+
+    temperature_c: float
+    temperature_f_round_cf: float
+    temperature_f_round_c: float
+
+
+def _half_up_integer(value: float) -> float:
+    return float(Decimal(str(value)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def rounding_candidates(temperature_c: float) -> RoundingCandidates:
+    raw_f = temperature_c * 9 / 5 + 32
+    rounded_c = _half_up_integer(temperature_c)
+    return RoundingCandidates(
+        temperature_c=temperature_c,
+        temperature_f_round_cf=_half_up_integer(raw_f),
+        temperature_f_round_c=rounded_c * 9 / 5 + 32,
+    )
+
+
 @dataclass
 class NWSObservationClient:
     base_url: str = "https://api.weather.gov"
@@ -125,7 +148,7 @@ def apply_rule_rounding(value: float, rounding: str) -> float:
     if rounding == "none":
         return value
     if rounding == "nearest_int":
-        return float(Decimal(str(value)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+        return _half_up_integer(value)
     if rounding == "floor":
         return float(floor(value))
     if rounding == "ceil":
@@ -143,12 +166,30 @@ def update_running_extreme(current: float | None, value: float, observation_type
     raise ValueError(f"unsupported observation_type: {observation_type}")
 
 
-def recompute_day_extreme(observations: list[StationObservation], observation_type: str, rounding: str) -> float:
-    if not observations:
-        raise ValueError("observations cannot be empty")
-    values = [apply_rule_rounding(row.temperature_f, rounding) for row in observations]
+def extreme(values: list[float], observation_type: str) -> float:
+    if not values:
+        raise ValueError("values cannot be empty")
     if observation_type == "daily_high":
         return max(values)
     if observation_type == "daily_low":
         return min(values)
     raise ValueError(f"unsupported observation_type: {observation_type}")
+
+
+def recompute_candidate_extremes(
+    observations: list[StationObservation], observation_type: str
+) -> tuple[float, float]:
+    if not observations:
+        raise ValueError("observations cannot be empty")
+    candidates = [rounding_candidates(row.temperature_c) for row in observations]
+    return (
+        extreme([row.temperature_f_round_cf for row in candidates], observation_type),
+        extreme([row.temperature_f_round_c for row in candidates], observation_type),
+    )
+
+
+def recompute_day_extreme(observations: list[StationObservation], observation_type: str, rounding: str) -> float:
+    if not observations:
+        raise ValueError("observations cannot be empty")
+    values = [apply_rule_rounding(row.temperature_f, rounding) for row in observations]
+    return extreme(values, observation_type)
