@@ -8,9 +8,9 @@
         "station_id": "KNYC",
         "timezone": "America/New_York",
         "observation_type": "daily_high",
-        "rounding": "nearest_int",
+        "rounding": "none",
         "revision_policy": "REPLACE_AFTER_RULE_AUDIT",
-        "source_name": "NWS"
+        "source_name": "REPLACE_WITH_RULEBOOK_SOURCE"
       },
       "thresholds": [
         {"ticker": "REPLACE_WITH_MARKET_TICKER", "comparator": ">=", "threshold": 90}
