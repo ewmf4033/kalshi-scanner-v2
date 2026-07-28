@@ -5,7 +5,7 @@ import json
 import os
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Iterable
 
 import httpx
 from cryptography.hazmat.primitives import hashes, serialization
@@ -62,6 +62,42 @@ class KalshiClient:
 
     def websocket_headers(self) -> dict[str, str]:
         return self.auth_headers("GET", "/trade-api/ws/v2")
+
+    def list_markets(
+        self,
+        *,
+        series_ticker: str,
+        statuses: Iterable[str] = ("open", "unopened"),
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """Return every current market for a series, following Kalshi cursors."""
+        if not series_ticker:
+            raise ValueError("series_ticker is required")
+        if not 1 <= limit <= 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        markets: list[dict[str, Any]] = []
+        seen_tickers: set[str] = set()
+        for status in statuses:
+            cursor = ""
+            while True:
+                params: dict[str, Any] = {
+                    "series_ticker": series_ticker,
+                    "status": status,
+                    "limit": limit,
+                    "mve_filter": "exclude",
+                }
+                if cursor:
+                    params["cursor"] = cursor
+                page = self.get("/markets", params=params)
+                for market in page.get("markets", []):
+                    ticker = str(market.get("ticker", ""))
+                    if ticker and ticker not in seen_tickers:
+                        seen_tickers.add(ticker)
+                        markets.append(market)
+                cursor = str(page.get("cursor") or "")
+                if not cursor:
+                    break
+        return markets
 
     def discover_incentive_path(self) -> tuple[str, dict[str, Any]]:
         errors: dict[str, str] = {}
