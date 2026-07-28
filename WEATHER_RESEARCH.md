@@ -7,8 +7,8 @@ This package is a read-only falsification experiment. It does not place orders.
 - Authenticated Kalshi WebSocket connection using the recommended external API host.
 - `use_yes_price: true` subscription and current fixed-point snapshot/delta parsing.
 - Sequence-safe book state: any gap or uncertain top-level depletion discards local state and requests a fresh snapshot.
-- NWS full-local-day observation polling, recomputing each daily extreme from all available observations on every poll.
-- Running extremes keyed by `(series_ticker, climatological_date)` using each rule's configured timezone.
+- NWS full-climate-day observation polling, recomputing each daily extreme from all available observations on every poll.
+- Running extremes keyed by `(series_ticker, climatological_date)` using each rule's configured time basis.
 - Rule-driven weather rounding before threshold evaluation.
 - SQLite persistence for raw book messages, observations, signals, and reconciliations.
 - A runner that computes the minimum acceptable gap from the current all-station-day Wilson upper bound. There is no fixed entry threshold.
@@ -27,13 +27,25 @@ python -m weather_research.live --config weather_research.json
 
 The logger uses `wss://external-api-ws.kalshi.com/trade-api/ws/v2` and signs `/trade-api/ws/v2`. These may be overridden with `KALSHI_WS_URL` and `KALSHI_REST_URL` for demo testing.
 
+## Climate clock guard
+
+Do not assume that an IANA civil timezone is the settlement clock. NWS CLI products label observation times as LST. For CLINYC, configure:
+
+```json
+"timezone": "America/New_York",
+"time_basis": "local_standard",
+"standard_utc_offset_minutes": -300
+```
+
+This uses fixed EST all year, so summer observations between midnight EDT and 1:00 a.m. EDT remain in the prior LST climate date. A `local_standard` rule without an explicit offset is rejected rather than inferred from a DST-observing zone.
+
 ## Daily operating requirement
 
-Enter the official rulebook-named settlement value through `runner.reconcile_day()` every day from day one. Do not defer this to a month-end backfill. With zero reconciliation rows, the Wilson upper bound is 100%, the required gap exceeds $1.00, and no signal can be classified as `would_have_filled`.
+Enter the official rulebook-named settlement value through `runner.reconcile_day()` every day from day one. Key reconciliation to the climate date named inside the final report, not its publication timestamp or a same-day preliminary CLI. Do not defer this to a month-end backfill. With zero reconciliation rows, the Wilson upper bound is 100%, the required gap exceeds $1.00, and no signal can be classified as `would_have_filled`.
 
 ## Rulebook rounding guard
 
-The `rounding` field is load-bearing. Set it only from the audited settlement rule for that exact series and source. If the rulebook does not clearly establish whether settlement uses whole-degree Fahrenheit, tenths, converted Celsius, or another convention, use `rounding: "none"` and accept under-firing. Do not use `nearest_int` as a convenience default: values such as 89.96°F become 90°F and can trigger certainty at the boundary.
+The `rounding` field is load-bearing. Set it only from the audited settlement rule for that exact series and source. CLINYC reports whole-degree Fahrenheit, so the NYC example uses `nearest_int`; other series must be audited independently. Values such as 89.96°F become 90°F and can trigger certainty at the boundary.
 
 ## Scope
 
@@ -69,4 +81,4 @@ Run:
 pytest -q tests/test_weather_research.py tests/test_weather_live.py
 ```
 
-Current branch verification: 25 focused tests pass. The focused suite covers unified YES pricing, intraday-safe certainty direction, bucket elimination, comparator-aware monotonicity, depth-aware fee rounding, error-derived thresholds, climatological-day resets, full-day observation recomputation, receipt-time quote aging, reconciliation cohorts, decimal half-up boundaries, persistence, and sequence-gap poisoning.
+The focused suite covers unified YES pricing, intraday-safe certainty direction, bucket elimination, comparator-aware monotonicity, depth-aware fee rounding, error-derived thresholds, civil and fixed-standard climatological-day resets, full-day observation recomputation, receipt-time quote aging, reconciliation cohorts, decimal half-up boundaries, persistence, and sequence-gap poisoning.
