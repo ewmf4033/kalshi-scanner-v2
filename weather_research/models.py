@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
 Side = Literal["yes", "no"]
@@ -57,6 +57,7 @@ class ThresholdContract:
     ticker: str
     comparator: Literal[">=", ">", "<=", "<"]
     threshold: float
+    event_date: date | None = None
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,7 @@ class BucketContract:
     upper: float | None
     lower_inclusive: bool = True
     upper_inclusive: bool = False
+    event_date: date | None = None
 
 
 @dataclass(frozen=True)
