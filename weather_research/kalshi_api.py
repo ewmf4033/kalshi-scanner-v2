@@ -14,7 +14,8 @@ from cryptography.hazmat.primitives.asymmetric import padding
 
 @dataclass
 class KalshiClient:
-    base_url: str = "https://api.elections.kalshi.com/trade-api/v2"
+    base_url: str = "https://external-api.kalshi.com/trade-api/v2"
+    websocket_url: str = "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
     api_key_id: str | None = None
     private_key_pem: str | None = None
     timeout: float = 15.0
@@ -27,11 +28,16 @@ class KalshiClient:
         if not pem and path:
             with open(path, "r", encoding="utf-8") as fh:
                 pem = fh.read()
-        return cls(api_key_id=key, private_key_pem=pem)
+        return cls(
+            base_url=os.environ.get("KALSHI_REST_URL", cls.base_url),
+            websocket_url=os.environ.get("KALSHI_WS_URL", cls.websocket_url),
+            api_key_id=key,
+            private_key_pem=pem,
+        )
 
-    def _headers(self, method: str, path: str) -> dict[str, str]:
+    def auth_headers(self, method: str, path: str) -> dict[str, str]:
         if not self.api_key_id or not self.private_key_pem:
-            return {}
+            raise RuntimeError("Kalshi API credentials are required")
         timestamp = str(int(time.time() * 1000))
         message = f"{timestamp}{method.upper()}{path.split('?', 1)[0]}".encode()
         key = serialization.load_pem_private_key(self.private_key_pem.encode(), password=None)
@@ -48,14 +54,16 @@ class KalshiClient:
 
     def get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         url = f"{self.base_url}{path}"
-        headers = self._headers("GET", f"/trade-api/v2{path}")
+        headers = self.auth_headers("GET", f"/trade-api/v2{path}")
         with httpx.Client(timeout=self.timeout) as client:
             response = client.get(url, params=params, headers=headers)
             response.raise_for_status()
             return response.json()
 
+    def websocket_headers(self) -> dict[str, str]:
+        return self.auth_headers("GET", "/trade-api/ws/v2")
+
     def discover_incentive_path(self) -> tuple[str, dict[str, Any]]:
-        """One authenticated call settles the literal endpoint; retain fallback for compatibility."""
         errors: dict[str, str] = {}
         for path in ("/incentive_programs", "/incentives"):
             try:
