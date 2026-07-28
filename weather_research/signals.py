@@ -136,8 +136,11 @@ def monotonicity_violations(
             max_size = min(high_book.yes_ask_size, low_book.yes_bid_size)
             structure = "buy_higher_yes_buy_lower_no"
 
-        pair_fee = taker_fee_cents(leg_one_price, contracts_per_leg) + taker_fee_cents(
-            leg_two_price, contracts_per_leg
+        executable_size = min(contracts_per_leg, max_size)
+        if executable_size <= 0:
+            continue
+        pair_fee = taker_fee_cents(leg_one_price, executable_size) + taker_fee_cents(
+            leg_two_price, executable_size
         )
         net_lock = gross_lock - pair_fee
         if net_lock > margin_cents:
@@ -151,6 +154,7 @@ def monotonicity_violations(
                     "pair_fee_cents": pair_fee,
                     "net_lock_cents": net_lock,
                     "max_size": max_size,
+                    "fee_size": executable_size,
                 }
             )
     return out
