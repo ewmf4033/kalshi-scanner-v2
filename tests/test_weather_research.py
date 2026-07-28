@@ -105,6 +105,18 @@ def test_monotonicity_drops_raw_lock_smaller_than_pair_fee():
     assert rows == []
 
 
+def test_monotonicity_fee_uses_actual_executable_depth():
+    rows = monotonicity_violations(
+        [ThresholdContract("L", ">=", 80), ThresholdContract("H", ">=", 90)],
+        {"L": BookTop("L", 5, 6, 8, 8), "H": BookTop("H", 10, 12, 8, 8)},
+        contracts_per_leg=100,
+    )
+    assert rows
+    assert rows[0]["fee_size"] == 8
+    assert rows[0]["pair_fee_cents"] == 1.25
+    assert rows[0]["net_lock_cents"] == 2.75
+
+
 def test_exact_fill_conditional_ev_collapse():
     fee = taker_fee_cents(94, contracts=100)
     assert certainty_trade_ev_cents(94, 0.01, fee) == 5 - fee
@@ -114,7 +126,13 @@ def test_reconciliation_power_uses_all_station_days():
     assert ReconciliationStats(total=240, errors=0).wilson_upper() < 0.02
 
 
-def test_reconciliation_uses_integer_tenths_and_separate_signal_stats():
+def test_reconciliation_uses_half_up_integer_tenths():
+    assert compare_settlement(78.05, 78.1)
+    assert compare_settlement(78.25, 78.3)
+    assert not compare_settlement(78.05, 78.0)
+
+
+def test_reconciliation_separates_signal_and_would_fill_stats():
     ledger = ReconciliationLedger()
     ledger.add(
         station_id="KNYC",
@@ -129,11 +147,29 @@ def test_reconciliation_uses_integer_tenths_and_separate_signal_stats():
         parsed_value=90.0,
         settled_value=91.0,
         signal_fired=True,
+        displayed_depth=10,
+        quote_survival_seconds=5,
+        gross_gap_cents=12,
+        required_gap_cents=10,
     )
-    assert compare_settlement(89.3000000001, 89.3)
-    assert ledger.stats().total == 2 and ledger.stats().errors == 1
-    assert ledger.stats(signal_only=True).total == 1
-    assert ledger.stats(signal_only=True).errors == 1
+    ledger.add(
+        station_id="KNYC",
+        date="2026-07-29",
+        parsed_value=92.0,
+        settled_value=93.0,
+        signal_fired=True,
+        displayed_depth=80,
+        quote_survival_seconds=5,
+        gross_gap_cents=12,
+        required_gap_cents=10,
+    )
+    assert ledger.stats().total == 3 and ledger.stats().errors == 2
+    assert ledger.stats(signal_only=True).total == 2
+    assert ledger.stats(signal_only=True).errors == 2
+    assert ledger.stats(fill_only=True).total == 1
+    assert ledger.stats(fill_only=True).errors == 1
+    with pytest.raises(ValueError):
+        ledger.stats(signal_only=True, fill_only=True)
 
 
 def test_sequence_gap_invalidates_book_until_fresh_snapshot():
