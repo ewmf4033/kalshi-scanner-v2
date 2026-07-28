@@ -23,11 +23,19 @@ class StationObservation:
 
 @dataclass(frozen=True)
 class RoundingCandidates:
-    """Lossless source plus the two CLI rounding hypotheses."""
+    """Lossless source plus CLI rounding hypotheses.
+
+    cf: round(C -> F)
+    c: F(round(C)); retained as a mechanism diagnostic even though it is not
+       generally on the CLI whole-degree Fahrenheit output grid.
+    cff: round(F(round(C))); integer-grid candidate for an ASOS Celsius-first
+         quantization path followed by CLI Fahrenheit rounding.
+    """
 
     temperature_c: float
     temperature_f_round_cf: float
     temperature_f_round_c: float
+    temperature_f_round_cff: float
 
 
 def _half_up_integer(value: float) -> float:
@@ -37,10 +45,12 @@ def _half_up_integer(value: float) -> float:
 def rounding_candidates(temperature_c: float) -> RoundingCandidates:
     raw_f = temperature_c * 9 / 5 + 32
     rounded_c = _half_up_integer(temperature_c)
+    f_after_round_c = rounded_c * 9 / 5 + 32
     return RoundingCandidates(
         temperature_c=temperature_c,
         temperature_f_round_cf=_half_up_integer(raw_f),
-        temperature_f_round_c=rounded_c * 9 / 5 + 32,
+        temperature_f_round_c=f_after_round_c,
+        temperature_f_round_cff=_half_up_integer(f_after_round_c),
     )
 
 
@@ -178,13 +188,14 @@ def extreme(values: list[float], observation_type: str) -> float:
 
 def recompute_candidate_extremes(
     observations: list[StationObservation], observation_type: str
-) -> tuple[float, float]:
+) -> tuple[float, float, float]:
     if not observations:
         raise ValueError("observations cannot be empty")
     candidates = [rounding_candidates(row.temperature_c) for row in observations]
     return (
         extreme([row.temperature_f_round_cf for row in candidates], observation_type),
         extreme([row.temperature_f_round_c for row in candidates], observation_type),
+        extreme([row.temperature_f_round_cff for row in candidates], observation_type),
     )
 
 
