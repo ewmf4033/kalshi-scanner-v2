@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -38,8 +39,10 @@ def market(
     provisional=False,
     lower_inclusive=None,
     upper_inclusive=None,
-    close_time="2099-01-01T00:00:00Z",
+    close_time=None,
 ):
+    if close_time is None:
+        close_time = (datetime.now(timezone.utc) + timedelta(hours=12)).isoformat()
     row = {
         "ticker": ticker,
         "status": status,
