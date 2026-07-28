@@ -39,15 +39,29 @@ Set:
 "discovery_seconds": 900
 ```
 
-For every configured `series_ticker`, the logger retrieves all open and unopened markets, follows pagination cursors, and rebuilds the active contract set. Structured strikes are mapped conservatively:
+For every configured `series_ticker`, the logger retrieves open and unopened markets, follows pagination cursors, bounds the catalog to the configured near-term horizon, and rebuilds the active contract set.
 
-- `floor_strike` only → `>= floor`;
-- `cap_strike` only → `<= cap`;
-- both strikes → inclusive interval bucket.
+Discovery uses `strike_type` as authority and never infers a comparator from which strike field happens to be populated:
 
-Markets with missing strikes, invalid bounds, unsupported status, duplicate ticker, or `is_provisional=true` are rejected and logged. Titles are retained only as diagnostics and are never parsed as settlement authority. If the API call fails, the last valid catalog remains active; if a successful refresh returns no usable contracts, the logger disconnects and keeps polling rather than carrying yesterday's tickers forward.
+- `greater` → `>` with `floor_strike`;
+- `greater_or_equal` → `>=` with `floor_strike`;
+- `less` → `<` with `cap_strike`;
+- `less_or_equal` → `<=` with `cap_strike`;
+- `between` → an interval only when both bounds and explicit `lower_inclusive` / `upper_inclusive` booleans are present.
 
-A changed ticker set clears every local book and quote-survival clock before reconnecting. No state crosses a contract roll.
+Unknown strike types, inconsistent fields, missing inclusivity, invalid bounds, unsupported status, duplicate ticker, or `is_provisional=true` are rejected. Titles are diagnostics only and are never parsed as settlement authority.
+
+Adjacent integer-settlement buckets are validated as a partition. Overlap, a missing integer, or double ownership of a shared boundary fails discovery rather than generating signals.
+
+Before merge or first launch, run the authenticated audit dump and compare it with the live market labels:
+
+```bash
+python -m weather_research.catalog_dump --series KXHIGHNY
+```
+
+The dump prints `ticker`, `strike_type`, `floor_strike`, `cap_strike`, inclusivity fields, `status`, and `close_time` for the full open/unopened ladder.
+
+If the API call fails, the last valid catalog remains active; if a successful refresh returns no usable contracts, the logger disconnects and keeps polling rather than carrying yesterday's tickers forward. A changed ticker set clears every local book and quote-survival clock before reconnecting. No state crosses a contract roll.
 
 ## Climate clock guard
 
@@ -116,4 +130,4 @@ Run:
 pytest -q tests/test_weather_research.py tests/test_weather_live.py tests/test_weather_rounding_candidates.py tests/test_weather_discovery.py
 ```
 
-The focused suite covers unified YES pricing, ticker pagination and rolling, intraday-safe certainty direction, bucket elimination, comparator-aware monotonicity, depth-aware fee rounding, error-derived thresholds, civil and fixed-standard climatological-day resets, full-day observation recomputation, receipt-time quote aging, three-path rounding persistence and reconciliation, decimal half-up boundaries, persistence, and sequence-gap poisoning.
+The focused suite covers unified YES pricing, ticker pagination and rolling, explicit strike-type mapping, bucket partition guards, intraday-safe certainty direction, bucket elimination, comparator-aware monotonicity, depth-aware fee rounding, error-derived thresholds, civil and fixed-standard climatological-day resets, full-day observation recomputation, receipt-time quote aging, three-path rounding persistence and reconciliation, decimal half-up boundaries, persistence, and sequence-gap poisoning.
