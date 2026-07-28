@@ -1,0 +1,29 @@
+{
+  "database_path": "weather_research.sqlite3",
+  "poll_seconds": 60,
+  "markets": [
+    {
+      "rule": {
+        "series_ticker": "REPLACE_WITH_SERIES",
+        "station_id": "KNYC",
+        "timezone": "America/New_York",
+        "observation_type": "daily_high",
+        "rounding": "nearest_int",
+        "revision_policy": "REPLACE_AFTER_RULE_AUDIT",
+        "source_name": "NWS"
+      },
+      "thresholds": [
+        {"ticker": "REPLACE_WITH_MARKET_TICKER", "comparator": ">=", "threshold": 90}
+      ],
+      "buckets": [
+        {
+          "ticker": "REPLACE_WITH_BUCKET_TICKER",
+          "lower": 85,
+          "upper": 89,
+          "lower_inclusive": true,
+          "upper_inclusive": true
+        }
+      ]
+    }
+  ]
+}
