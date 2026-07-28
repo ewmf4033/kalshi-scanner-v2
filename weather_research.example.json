@@ -7,10 +7,12 @@
         "series_ticker": "REPLACE_WITH_SERIES",
         "station_id": "KNYC",
         "timezone": "America/New_York",
+        "time_basis": "local_standard",
+        "standard_utc_offset_minutes": -300,
         "observation_type": "daily_high",
-        "rounding": "none",
+        "rounding": "nearest_int",
         "revision_policy": "REPLACE_AFTER_RULE_AUDIT",
-        "source_name": "REPLACE_WITH_RULEBOOK_SOURCE"
+        "source_name": "NWS CLINYC"
       },
       "thresholds": [
         {"ticker": "REPLACE_WITH_MARKET_TICKER", "comparator": ">=", "threshold": 90}

@@ -27,6 +27,19 @@ class WeatherRule:
     rounding: Literal["nearest_int", "floor", "ceil", "none"]
     revision_policy: str
     source_name: str
+    time_basis: Literal["civil", "local_standard"] = "civil"
+    standard_utc_offset_minutes: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.time_basis == "local_standard" and self.standard_utc_offset_minutes is None:
+            raise ValueError(
+                "local_standard rules require standard_utc_offset_minutes; "
+                "do not infer it from a DST-observing zone"
+            )
+        if self.time_basis == "civil" and self.standard_utc_offset_minutes is not None:
+            raise ValueError(
+                "standard_utc_offset_minutes is only valid with time_basis='local_standard'"
+            )
 
 
 @dataclass(frozen=True)

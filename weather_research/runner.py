@@ -78,6 +78,15 @@ class WeatherResearchRunner:
             return []
         return self._evaluate_ticker(book.ticker, now)
 
+    @staticmethod
+    def _climate_date(observed_at: datetime, rule: WeatherRule) -> date:
+        return climatological_date(
+            observed_at,
+            rule.timezone,
+            time_basis=rule.time_basis,
+            standard_utc_offset_minutes=rule.standard_utc_offset_minutes,
+        )
+
     def ingest_observation(self, station_id: str, temperature_f: float, observed_at: datetime) -> list[Signal]:
         """Ingest one observation safely; quote survival always uses receipt time."""
         receipt_time = datetime.now(timezone.utc)
@@ -86,7 +95,7 @@ class WeatherResearchRunner:
             rule = definition.rule
             if rule.station_id != station_id:
                 continue
-            local_date = climatological_date(observed_at, rule.timezone)
+            local_date = self._climate_date(observed_at, rule)
             rounded = apply_rule_rounding(temperature_f, rule.rounding)
             key = (rule.series_ticker, local_date)
             running = update_running_extreme(
@@ -103,13 +112,13 @@ class WeatherResearchRunner:
     def ingest_day_observations(
         self, series_ticker: str, observations: list[StationObservation], receipt_time: datetime | None = None
     ) -> list[Signal]:
-        """Recompute the current local-day extreme from the complete observation set."""
+        """Recompute the current climate-day extreme from the complete observation set."""
         definition = self.definitions[series_ticker]
         rule = definition.rule
         if not observations:
             return []
         receipt_time = receipt_time or datetime.now(timezone.utc)
-        local_dates = {climatological_date(row.observed_at, rule.timezone) for row in observations}
+        local_dates = {self._climate_date(row.observed_at, rule) for row in observations}
         if len(local_dates) != 1:
             raise ValueError("day observation batch crosses climatological dates")
         local_date = next(iter(local_dates))

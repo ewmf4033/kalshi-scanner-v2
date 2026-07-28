@@ -102,14 +102,51 @@ def test_running_extreme_resets_by_local_climatological_date(tmp_path):
         {"S": MarketDefinition(rule, thresholds=(ThresholdContract("T", ">=", 90),))}, store
     )
     runner.ingest_book_message(snapshot())
-    day_one = datetime(2026, 7, 27, 20, 0, tzinfo=timezone.utc)  # 16:00 EDT
-    day_two = datetime(2026, 7, 28, 5, 5, tzinfo=timezone.utc)   # 01:05 EDT
+    day_one = datetime(2026, 7, 27, 20, 0, tzinfo=timezone.utc)
+    day_two = datetime(2026, 7, 28, 5, 5, tzinfo=timezone.utc)
     runner.ingest_observation("KNYC", 95, day_one)
     signals = runner.ingest_observation("KNYC", 68, day_two)
     assert climatological_date(day_one, rule.timezone) != climatological_date(day_two, rule.timezone)
     assert runner.running_extremes[("S", climatological_date(day_two, rule.timezone))] == 68
     assert signals == []
     store.close()
+
+
+def test_lst_climate_date_does_not_follow_summer_dst_midnight():
+    instant = datetime(2026, 7, 28, 4, 30, tzinfo=timezone.utc)
+    civil = climatological_date(instant, "America/New_York")
+    standard = climatological_date(
+        instant,
+        "America/New_York",
+        time_basis="local_standard",
+        standard_utc_offset_minutes=-300,
+    )
+    assert civil.isoformat() == "2026-07-28"
+    assert standard.isoformat() == "2026-07-27"
+
+
+def test_lst_runner_keeps_0030_edt_in_previous_climate_day(tmp_path):
+    store = ResearchStore(tmp_path / "research.sqlite")
+    rule = WeatherRule(
+        "S", "KNYC", "America/New_York", "daily_high", "nearest_int", "final", "NWS",
+        time_basis="local_standard", standard_utc_offset_minutes=-300,
+    )
+    runner = WeatherResearchRunner(
+        {"S": MarketDefinition(rule, thresholds=(ThresholdContract("T", ">=", 90),))}, store
+    )
+    runner.ingest_book_message(snapshot())
+    before_lst_midnight = datetime(2026, 7, 28, 4, 30, tzinfo=timezone.utc)
+    runner.ingest_observation("KNYC", 95, before_lst_midnight)
+    assert runner.current_dates["S"].isoformat() == "2026-07-27"
+    store.close()
+
+
+def test_local_standard_requires_explicit_offset():
+    with pytest.raises(ValueError):
+        WeatherRule(
+            "S", "KNYC", "America/New_York", "daily_high", "nearest_int", "final", "NWS",
+            time_basis="local_standard",
+        )
 
 
 def test_full_day_recompute_recovers_missed_peak():
@@ -144,7 +181,19 @@ def test_quote_survival_uses_receipt_time_not_stale_observation_time(tmp_path):
 
 
 def test_local_day_window_starts_at_station_midnight():
-    now = datetime(2026, 7, 28, 5, 5, tzinfo=timezone.utc)  # 01:05 EDT
+    now = datetime(2026, 7, 28, 5, 5, tzinfo=timezone.utc)
     start, end = local_day_window(now, "America/New_York")
     assert start == datetime(2026, 7, 28, 4, 0, tzinfo=timezone.utc)
+    assert end == now
+
+
+def test_lst_day_window_starts_at_fixed_standard_midnight():
+    now = datetime(2026, 7, 28, 5, 5, tzinfo=timezone.utc)
+    start, end = local_day_window(
+        now,
+        "America/New_York",
+        time_basis="local_standard",
+        standard_utc_offset_minutes=-300,
+    )
+    assert start == datetime(2026, 7, 28, 5, 0, tzinfo=timezone.utc)
     assert end == now
