@@ -10,6 +10,7 @@ This package is a read-only falsification experiment. It does not place orders.
 - NWS full-climate-day observation polling, recomputing each daily extreme from all available observations on every poll.
 - Running extremes keyed by `(series_ticker, climatological_date)` using each rule's configured time basis.
 - Rule-driven weather rounding before threshold evaluation.
+- Lossless weather persistence: raw Celsius, both candidate Fahrenheit paths, both candidate daily extremes, and both settlement comparisons.
 - SQLite persistence for raw book messages, observations, signals, and reconciliations.
 - A runner that computes the minimum acceptable gap from the current all-station-day Wilson upper bound. There is no fixed entry threshold.
 - Separate baseline, signal-conditioned, and would-have-filled reconciliation bounds.
@@ -42,6 +43,16 @@ This uses fixed EST all year, so summer observations between midnight EDT and 1:
 ## Daily operating requirement
 
 Enter the official rulebook-named settlement value through `runner.reconcile_day()` every day from day one. Key reconciliation to the climate date named inside the final report, not its publication timestamp or a same-day preliminary CLI. Do not defer this to a month-end backfill. With zero reconciliation rows, the Wilson upper bound is 100%, the required gap exceeds $1.00, and no signal can be classified as `would_have_filled`.
+
+## Rounding-path evidence
+
+The source of truth is the raw Celsius observation. Every stored observation also includes:
+
+- `temperature_f_round_cf`: `round(C → F)`;
+- `temperature_f_round_c`: `F(round(C))`;
+- `running_extreme_cf` and `running_extreme_c`, computed independently over the entire climate day.
+
+Every reconciliation stores both candidate parsed values and both agreement flags against the final settlement. The active signal path remains the explicitly configured rule path; the forensic candidate data is retained so a later hypothesis can be tested without reconstructing lost source observations.
 
 ## Rulebook rounding guard
 
@@ -81,4 +92,4 @@ Run:
 pytest -q tests/test_weather_research.py tests/test_weather_live.py
 ```
 
-The focused suite covers unified YES pricing, intraday-safe certainty direction, bucket elimination, comparator-aware monotonicity, depth-aware fee rounding, error-derived thresholds, civil and fixed-standard climatological-day resets, full-day observation recomputation, receipt-time quote aging, reconciliation cohorts, decimal half-up boundaries, persistence, and sequence-gap poisoning.
+The focused suite covers unified YES pricing, intraday-safe certainty direction, bucket elimination, comparator-aware monotonicity, depth-aware fee rounding, error-derived thresholds, civil and fixed-standard climatological-day resets, full-day observation recomputation, receipt-time quote aging, dual rounding-path persistence and reconciliation, decimal half-up boundaries, persistence, and sequence-gap poisoning.
