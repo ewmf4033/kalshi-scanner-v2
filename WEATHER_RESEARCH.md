@@ -31,6 +31,10 @@ The logger uses `wss://external-api-ws.kalshi.com/trade-api/ws/v2` and signs `/t
 
 Enter the official rulebook-named settlement value through `runner.reconcile_day()` every day from day one. Do not defer this to a month-end backfill. With zero reconciliation rows, the Wilson upper bound is 100%, the required gap exceeds $1.00, and no signal can be classified as `would_have_filled`.
 
+## Rulebook rounding guard
+
+The `rounding` field is load-bearing. Set it only from the audited settlement rule for that exact series and source. If the rulebook does not clearly establish whether settlement uses whole-degree Fahrenheit, tenths, converted Celsius, or another convention, use `rounding: "none"` and accept under-firing. Do not use `nearest_int` as a convenience default: values such as 89.96°F become 90°F and can trigger certainty at the boundary.
+
 ## Scope
 
 1. Resolve the authenticated incentive-program endpoint and inspect active/upcoming weather programs.
