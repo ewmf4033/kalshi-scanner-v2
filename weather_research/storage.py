@@ -6,6 +6,8 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
 
+from .reconcile import _tenths
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS book_events (
@@ -75,8 +77,26 @@ class ResearchStore:
         )
         self.conn.commit()
 
-    def reconciliation_counts(self, *, fill_only: bool = False) -> tuple[int, int]:
-        where = "WHERE would_have_filled=1" if fill_only else ""
+    def add_reconciliation(
+        self, *, station_id: str, date: str, parsed_value: float, settled_value: float,
+        signal_fired: bool, would_have_filled: bool, tolerance_tenths: int = 0,
+    ) -> None:
+        parsed, settled = _tenths(parsed_value), _tenths(settled_value)
+        agreed = abs(parsed - settled) <= tolerance_tenths
+        self.conn.execute(
+            """INSERT INTO reconciliations(station_id,date,parsed_tenths,settled_tenths,
+               signal_fired,would_have_filled,agreed) VALUES(?,?,?,?,?,?,?)
+               ON CONFLICT(station_id,date) DO UPDATE SET parsed_tenths=excluded.parsed_tenths,
+               settled_tenths=excluded.settled_tenths,signal_fired=excluded.signal_fired,
+               would_have_filled=excluded.would_have_filled,agreed=excluded.agreed""",
+            (station_id, date, parsed, settled, int(signal_fired), int(would_have_filled), int(agreed)),
+        )
+        self.conn.commit()
+
+    def reconciliation_counts(self, *, signal_only: bool = False, fill_only: bool = False) -> tuple[int, int]:
+        if signal_only and fill_only:
+            raise ValueError("choose signal_only or fill_only, not both")
+        where = "WHERE signal_fired=1" if signal_only else ("WHERE would_have_filled=1" if fill_only else "")
         total, errors = self.conn.execute(
             f"SELECT COUNT(*), COALESCE(SUM(CASE WHEN agreed=0 THEN 1 ELSE 0 END),0) FROM reconciliations {where}"
         ).fetchone()
