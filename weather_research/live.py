@@ -30,6 +30,7 @@ class LiveConfig:
     database_path: str = "weather_research.sqlite3"
     auto_discover: bool = True
     discovery_seconds: float = 900.0
+    discovery_horizon_hours: float = 72.0
 
     @property
     def market_tickers(self) -> list[str]:
@@ -51,14 +52,18 @@ def load_config(path: str | Path) -> LiveConfig:
             buckets=tuple(BucketContract(**row) for row in item.get("buckets", [])),
         )
     discovery_seconds = float(data.get("discovery_seconds", 900))
+    discovery_horizon_hours = float(data.get("discovery_horizon_hours", 72))
     if discovery_seconds < 30:
         raise ValueError("discovery_seconds must be at least 30")
+    if discovery_horizon_hours <= 0:
+        raise ValueError("discovery_horizon_hours must be positive")
     return LiveConfig(
         definitions=definitions,
         poll_seconds=float(data.get("poll_seconds", 60)),
         database_path=str(data.get("database_path", "weather_research.sqlite3")),
         auto_discover=bool(data.get("auto_discover", True)),
         discovery_seconds=discovery_seconds,
+        discovery_horizon_hours=discovery_horizon_hours,
     )
 
 
@@ -84,11 +89,18 @@ class LiveWeatherLogger:
             return False
         new_definitions: dict[str, MarketDefinition] = {}
         rejected_total = 0
+        now = datetime.now(timezone.utc)
         for series_ticker, existing in self.config.definitions.items():
             markets = await asyncio.to_thread(
                 self.kalshi.list_markets, series_ticker=series_ticker
             )
-            result = discover_definition(existing.rule, markets, require_nonempty=False)
+            result = discover_definition(
+                existing.rule,
+                markets,
+                require_nonempty=False,
+                now=now,
+                horizon_hours=self.config.discovery_horizon_hours,
+            )
             new_definitions[series_ticker] = result.definition
             rejected_total += len(result.rejected)
             if result.rejected:
@@ -110,7 +122,6 @@ class LiveWeatherLogger:
         self.runner.definitions = self.config.definitions
         changed = old_tickers != new_tickers
         if changed:
-            # Never carry a book or quote-age clock across a contract roll.
             self.runner.books = OrderBookState()
             self.runner.quote_first_seen.clear()
             log.info(
@@ -125,7 +136,7 @@ class LiveWeatherLogger:
                 await self._refresh_catalog()
                 tickers = self.config.market_tickers
                 if not tickers:
-                    log.warning("no open or unopened weather markets discovered; retrying")
+                    log.warning("no near-term open or unopened weather markets discovered; retrying")
                     await asyncio.sleep(min(self.config.discovery_seconds, 60))
                     continue
 
@@ -148,7 +159,7 @@ class LiveWeatherLogger:
                                 changed = await self._refresh_catalog()
                                 refresh_at = asyncio.get_running_loop().time() + self.config.discovery_seconds
                                 if changed:
-                                    break  # reconnect with the new exact ticker set
+                                    break
                             continue
                         message: dict[str, Any] = json.loads(raw)
                         try:
@@ -165,7 +176,6 @@ class LiveWeatherLogger:
     async def _observation_loop(self) -> None:
         while not self._stop.is_set():
             receipt_time = datetime.now(timezone.utc)
-            # Copy because catalog refresh mutates the dictionary atomically between awaits.
             for series_ticker, definition in list(self.config.definitions.items()):
                 rule = definition.rule
                 try:
