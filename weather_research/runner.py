@@ -93,6 +93,7 @@ class WeatherResearchRunner:
     def _evaluate_ticker(self, ticker: str, now: datetime) -> list[Signal]:
         book = self.books.books.get(ticker)
         if book is None:
+            self._clear_quote_age(ticker)
             return []
         out: list[Signal] = []
         for definition in self.definitions.values():
@@ -109,9 +110,17 @@ class WeatherResearchRunner:
                     signal = eliminated_bucket_signal(contract, book, running, definition.rule.observation_type)
                     if signal:
                         out.append(signal)
+
+        active_keys = {(s.ticker, s.side, s.executable_price_cents) for s in out}
+        for key in [k for k in self.quote_first_seen if k[0] == ticker and k not in active_keys]:
+            del self.quote_first_seen[key]
         for signal in out:
             self._persist_signal(signal, now)
         return out
+
+    def _clear_quote_age(self, ticker: str) -> None:
+        for key in [k for k in self.quote_first_seen if k[0] == ticker]:
+            del self.quote_first_seen[key]
 
     def _persist_signal(self, signal: Signal, now: datetime) -> None:
         key = (signal.ticker, signal.side, signal.executable_price_cents)
