@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass, replace
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable
 
 from .models import BucketContract, ThresholdContract, WeatherRule
@@ -72,6 +72,17 @@ def _event_ticker(market_ticker: str) -> str:
     if "-" not in market_ticker:
         raise DiscoveryError(f"market ticker lacks event suffix: {market_ticker!r}")
     return market_ticker.rsplit("-", 1)[0]
+
+
+def _event_date_from_ticker(market_ticker: str) -> date | None:
+    """Parse Kalshi's YYMMMDD event date segment, for example 26JUL29."""
+    match = re.search(r"-(\d{2}[A-Z]{3}\d{2})-", market_ticker.upper())
+    if match is None:
+        return None
+    try:
+        return datetime.strptime(match.group(1), "%y%b%d").date()
+    except ValueError as exc:
+        raise DiscoveryError(f"invalid event date in ticker {market_ticker!r}") from exc
 
 
 def market_to_contract(market: dict[str, Any]):
@@ -187,6 +198,10 @@ def discover_definition(
                 continue
         try:
             contract = market_to_contract(market)
+            event_date = _event_date_from_ticker(contract.ticker)
+            if contract.ticker.startswith(f"{rule.series_ticker}-") and event_date is None:
+                raise DiscoveryError(f"unable to parse event date from ticker {contract.ticker!r}")
+            contract = replace(contract, event_date=event_date)
         except DiscoveryError as exc:
             rejected.append((ticker, str(exc)))
             continue
@@ -206,9 +221,9 @@ def discover_definition(
             buckets.append(contract)
             bucket_events[event_ticker].append(contract)
 
-    thresholds.sort(key=lambda row: (row.threshold, row.ticker))
+    thresholds.sort(key=lambda row: (row.event_date or date.min, row.threshold, row.ticker))
     buckets.sort(key=lambda row: (
-        row.ticker.rsplit("-", 1)[0],
+        row.event_date or date.min,
         float("-inf") if row.lower is None else row.lower,
         float("inf") if row.upper is None else row.upper,
         row.ticker,
