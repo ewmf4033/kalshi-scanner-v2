@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
 from .models import BucketContract, ThresholdContract, WeatherRule
@@ -25,6 +26,18 @@ def _number(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError) as exc:
         raise DiscoveryError(f"invalid strike value {value!r}") from exc
+
+
+def _timestamp(value: Any) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise DiscoveryError("missing close_time")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise DiscoveryError(f"invalid close_time {value!r}") from exc
+    if parsed.tzinfo is None:
+        raise DiscoveryError("close_time must be timezone-aware")
+    return parsed.astimezone(timezone.utc)
 
 
 def market_to_contract(market: dict[str, Any]):
@@ -59,11 +72,17 @@ def discover_definition(
     markets: Iterable[dict[str, Any]],
     *,
     require_nonempty: bool = True,
+    now: datetime | None = None,
+    horizon_hours: float | None = None,
 ) -> DiscoveryResult:
     thresholds: list[ThresholdContract] = []
     buckets: list[BucketContract] = []
     rejected: list[tuple[str, str]] = []
     seen: set[str] = set()
+    if horizon_hours is not None and horizon_hours <= 0:
+        raise ValueError("horizon_hours must be positive")
+    now_utc = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    horizon_end = now_utc + timedelta(hours=horizon_hours) if horizon_hours is not None else None
 
     for market in markets:
         ticker = str(market.get("ticker") or "<missing>")
@@ -71,6 +90,18 @@ def discover_definition(
         if status not in {"open", "unopened"}:
             rejected.append((ticker, f"unsupported status {status!r}"))
             continue
+        if horizon_end is not None:
+            try:
+                close_time = _timestamp(market.get("close_time"))
+            except DiscoveryError as exc:
+                rejected.append((ticker, str(exc)))
+                continue
+            if close_time < now_utc:
+                rejected.append((ticker, "close_time is in the past"))
+                continue
+            if close_time > horizon_end:
+                rejected.append((ticker, "outside discovery horizon"))
+                continue
         try:
             contract = market_to_contract(market)
         except DiscoveryError as exc:
