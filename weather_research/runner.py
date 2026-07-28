@@ -38,7 +38,7 @@ class WeatherResearchRunner:
     slippage_cents: float = 0.0
     books: OrderBookState = field(default_factory=OrderBookState)
     running_extremes: dict[tuple[str, date], float] = field(default_factory=dict)
-    candidate_extremes: dict[tuple[str, date], tuple[float, float]] = field(default_factory=dict)
+    candidate_extremes: dict[tuple[str, date], tuple[float, float, float]] = field(default_factory=dict)
     current_dates: dict[str, date] = field(default_factory=dict)
     quote_first_seen: dict[tuple[str, str, int], datetime] = field(default_factory=dict)
 
@@ -70,6 +70,7 @@ class WeatherResearchRunner:
         date: str,
         parsed_cf_value: float,
         parsed_c_value: float,
+        parsed_cff_value: float,
         selected_parsed_value: float,
         settled_value: float,
         signal_fired: bool,
@@ -81,6 +82,7 @@ class WeatherResearchRunner:
             date=date,
             parsed_cf_value=parsed_cf_value,
             parsed_c_value=parsed_c_value,
+            parsed_cff_value=parsed_cff_value,
             selected_parsed_value=selected_parsed_value,
             settled_value=settled_value,
             signal_fired=signal_fired,
@@ -121,15 +123,18 @@ class WeatherResearchRunner:
             selected_running = update_running_extreme(
                 self.running_extremes.get(key), selected, rule.observation_type
             )
-            previous_cf, previous_c = self.candidate_extremes.get(key, (None, None))
+            previous_cf, previous_c, previous_cff = self.candidate_extremes.get(key, (None, None, None))
             running_cf = update_running_extreme(
                 previous_cf, candidates.temperature_f_round_cf, rule.observation_type
             )
             running_c = update_running_extreme(
                 previous_c, candidates.temperature_f_round_c, rule.observation_type
             )
+            running_cff = update_running_extreme(
+                previous_cff, candidates.temperature_f_round_cff, rule.observation_type
+            )
             self.running_extremes[key] = selected_running
-            self.candidate_extremes[key] = (running_cf, running_c)
+            self.candidate_extremes[key] = (running_cf, running_c, running_cff)
             self.current_dates[rule.series_ticker] = local_date
             self.store.add_observation(
                 station_id=station_id,
@@ -137,8 +142,10 @@ class WeatherResearchRunner:
                 temperature_c=temperature_c,
                 temperature_f_round_cf=candidates.temperature_f_round_cf,
                 temperature_f_round_c=candidates.temperature_f_round_c,
+                temperature_f_round_cff=candidates.temperature_f_round_cff,
                 running_extreme_cf=running_cf,
                 running_extreme_c=running_c,
+                running_extreme_cff=running_cff,
                 selected_temperature_f=selected,
                 selected_running_extreme_f=selected_running,
                 observation_type=rule.observation_type,
@@ -160,10 +167,10 @@ class WeatherResearchRunner:
             raise ValueError("day observation batch crosses climatological dates")
         local_date = next(iter(local_dates))
         selected_running = recompute_day_extreme(observations, rule.observation_type, rule.rounding)
-        running_cf, running_c = recompute_candidate_extremes(observations, rule.observation_type)
+        running_cf, running_c, running_cff = recompute_candidate_extremes(observations, rule.observation_type)
         key = (series_ticker, local_date)
         self.running_extremes[key] = selected_running
-        self.candidate_extremes[key] = (running_cf, running_c)
+        self.candidate_extremes[key] = (running_cf, running_c, running_cff)
         self.current_dates[series_ticker] = local_date
         latest = max(observations, key=lambda row: row.observed_at)
         candidates = rounding_candidates(latest.temperature_c)
@@ -174,8 +181,10 @@ class WeatherResearchRunner:
             temperature_c=latest.temperature_c,
             temperature_f_round_cf=candidates.temperature_f_round_cf,
             temperature_f_round_c=candidates.temperature_f_round_c,
+            temperature_f_round_cff=candidates.temperature_f_round_cff,
             running_extreme_cf=running_cf,
             running_extreme_c=running_c,
+            running_extreme_cff=running_cff,
             selected_temperature_f=selected,
             selected_running_extreme_f=selected_running,
             observation_type=rule.observation_type,
