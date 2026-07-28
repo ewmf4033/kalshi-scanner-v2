@@ -217,15 +217,21 @@ class WeatherResearchRunner:
             if running is None:
                 continue
             for contract in definition.thresholds:
-                if contract.ticker == ticker:
-                    signal = realized_threshold_signal(contract, book, running, definition.rule.observation_type)
-                    if signal:
-                        out.append(signal)
+                if contract.ticker != ticker:
+                    continue
+                if contract.event_date is not None and contract.event_date != active_date:
+                    continue
+                signal = realized_threshold_signal(contract, book, running, definition.rule.observation_type)
+                if signal:
+                    out.append(signal)
             for contract in definition.buckets:
-                if contract.ticker == ticker:
-                    signal = eliminated_bucket_signal(contract, book, running, definition.rule.observation_type)
-                    if signal:
-                        out.append(signal)
+                if contract.ticker != ticker:
+                    continue
+                if contract.event_date is not None and contract.event_date != active_date:
+                    continue
+                signal = eliminated_bucket_signal(contract, book, running, definition.rule.observation_type)
+                if signal:
+                    out.append(signal)
 
         active_keys = {(s.ticker, s.side, s.executable_price_cents) for s in out}
         for key in [k for k in self.quote_first_seen if k[0] == ticker and k not in active_keys]:
