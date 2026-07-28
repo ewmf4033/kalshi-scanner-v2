@@ -69,14 +69,7 @@ def test_explicit_strike_types_map_without_title_or_null_inference():
     assert market_to_contract(market("LT", strike_type="less", cap=84)) == ThresholdContract("LT", "<", 84)
     assert market_to_contract(market("LE", strike_type="less_or_equal", cap=85)) == ThresholdContract("LE", "<=", 85)
     assert market_to_contract(
-        market(
-            "MID",
-            strike_type="between",
-            floor=80,
-            cap=84,
-            lower_inclusive=True,
-            upper_inclusive=True,
-        )
+        market("MID", strike_type="between", floor=80, cap=84, lower_inclusive=True, upper_inclusive=True)
     ) == BucketContract("MID", 80, 84, True, True)
 
 
@@ -100,9 +93,7 @@ def test_between_without_booleans_or_exact_display_range_fails_closed():
 
 def test_between_with_only_one_inclusivity_field_fails_closed():
     with pytest.raises(DiscoveryError, match="both be booleans"):
-        market_to_contract(
-            market("BAD", strike_type="between", floor=80, cap=84, lower_inclusive=True)
-        )
+        market_to_contract(market("BAD", strike_type="between", floor=80, cap=84, lower_inclusive=True))
 
 
 def test_floor_only_does_not_imply_comparator():
@@ -111,10 +102,7 @@ def test_floor_only_does_not_imply_comparator():
 
 
 def test_discovery_accepts_authenticated_active_status():
-    result = discover_definition(
-        rule(),
-        [market("GOOD", strike_type="greater", floor=84, status="active")],
-    )
+    result = discover_definition(rule(), [market("GOOD", strike_type="greater", floor=84, status="active")])
     assert result.accepted_tickers == ("GOOD",)
 
 
@@ -136,45 +124,51 @@ def test_discovery_fails_closed_when_nothing_is_usable():
         discover_definition(rule(), [market("BAD", strike_type="")])
 
 
-def test_authenticated_kxhighny_ladder_partitions_cleanly():
-    rows = [
-        market("T77", strike_type="less", cap=77, status="active", subtitle="76° or below"),
-        market("B77.5", strike_type="between", floor=77, cap=78, status="active", subtitle="77° to 78°"),
-        market("B79.5", strike_type="between", floor=79, cap=80, status="active", subtitle="79° to 80°"),
-        market("B81.5", strike_type="between", floor=81, cap=82, status="active", subtitle="81° to 82°"),
-        market("B83.5", strike_type="between", floor=83, cap=84, status="active", subtitle="83° to 84°"),
-        market("T84", strike_type="greater", floor=84, status="active", subtitle="85° or above"),
+def ladder(event, low, high):
+    return [
+        market(f"{event}-T{low}", strike_type="less", cap=low, status="active"),
+        market(f"{event}-B{low}.5", strike_type="between", floor=low, cap=low + 1, status="active", subtitle=f"{low}° to {low + 1}°"),
+        market(f"{event}-B{low + 2}.5", strike_type="between", floor=low + 2, cap=low + 3, status="active", subtitle=f"{low + 2}° to {low + 3}°"),
+        market(f"{event}-B{low + 4}.5", strike_type="between", floor=low + 4, cap=low + 5, status="active", subtitle=f"{low + 4}° to {low + 5}°"),
+        market(f"{event}-B{low + 6}.5", strike_type="between", floor=low + 6, cap=high, status="active", subtitle=f"{low + 6}° to {high}°"),
+        market(f"{event}-T{high}", strike_type="greater", floor=high, status="active"),
     ]
-    result = discover_definition(rule(), rows)
+
+
+def test_authenticated_kxhighny_ladder_partitions_cleanly():
+    result = discover_definition(rule(), ladder("KXHIGHNY-26JUL28", 77, 84))
     assert len(result.definition.buckets) == 4
     assert len(result.definition.thresholds) == 2
     assert result.rejected == ()
 
 
+def test_multiple_event_dates_validate_independently():
+    rows = ladder("KXHIGHNY-26JUL28", 77, 84) + ladder("KXHIGHNY-26JUL29", 76, 83)
+    result = discover_definition(rule(), rows)
+    assert len(result.accepted_tickers) == 12
+    assert len(result.definition.buckets) == 8
+    assert len(result.definition.thresholds) == 4
+    assert result.rejected == ()
+
+
 def test_integer_bucket_partition_accepts_adjacent_inclusive_ranges():
-    validate_bucket_partition(
-        [
-            BucketContract("A", 84, 85, True, True),
-            BucketContract("B", 86, 87, True, True),
-        ]
-    )
+    validate_bucket_partition([
+        BucketContract("A", 84, 85, True, True),
+        BucketContract("B", 86, 87, True, True),
+    ])
 
 
 def test_integer_bucket_partition_rejects_overlap_and_gap():
     with pytest.raises(DiscoveryError, match="overlap"):
-        validate_bucket_partition(
-            [
-                BucketContract("A", 84, 85, True, True),
-                BucketContract("B", 85, 86, True, True),
-            ]
-        )
+        validate_bucket_partition([
+            BucketContract("A", 84, 85, True, True),
+            BucketContract("B", 85, 86, True, True),
+        ])
     with pytest.raises(DiscoveryError, match="gap"):
-        validate_bucket_partition(
-            [
-                BucketContract("A", 84, 85, True, False),
-                BucketContract("B", 86, 87, True, True),
-            ]
-        )
+        validate_bucket_partition([
+            BucketContract("A", 84, 85, True, False),
+            BucketContract("B", 86, 87, True, True),
+        ])
 
 
 class FakeKalshi:
@@ -209,7 +203,6 @@ def test_catalog_roll_replaces_tickers_and_clears_books(tmp_path):
     logger = LiveWeatherLogger(config, kalshi=fake)
     assert asyncio.run(logger._refresh_catalog()) is True
     assert config.market_tickers == ["DAY1"]
-
     logger.runner.quote_first_seen[("DAY1", "yes", 90)] = None
     fake.rows = [market("DAY2", strike_type="greater", floor=91, status="unopened")]
     assert asyncio.run(logger._refresh_catalog()) is True
