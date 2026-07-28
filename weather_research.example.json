@@ -3,6 +3,7 @@
   "poll_seconds": 60,
   "auto_discover": true,
   "discovery_seconds": 900,
+  "discovery_horizon_hours": 72,
   "markets": [
     {
       "rule": {
