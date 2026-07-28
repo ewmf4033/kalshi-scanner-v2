@@ -1,9 +1,11 @@
+import pytest
+
 from weather_research.ev import certainty_trade_ev_cents, taker_fee_cents
 from weather_research.incentives import IncentiveEconomics, qualifying_score
 from weather_research.models import BookTop, BucketContract, ThresholdContract
-from weather_research.reconcile import ReconciliationStats
+from weather_research.reconcile import ReconciliationLedger, ReconciliationStats, compare_settlement
 from weather_research.signals import eliminated_bucket_signal, monotonicity_violations, realized_threshold_signal
-from weather_research.ws_protocol import orderbook_subscription
+from weather_research.ws_protocol import SequenceGapError, SequenceTracker, orderbook_subscription
 
 
 def test_subscription_forces_unified_yes_prices():
@@ -11,30 +13,96 @@ def test_subscription_forces_unified_yes_prices():
     assert msg["params"]["use_yes_price"] is True
 
 
-def test_realized_threshold_signal():
-    signal = realized_threshold_signal(
+def test_daily_high_only_locks_upper_comparators():
+    locked = realized_threshold_signal(
         ThresholdContract("A", ">=", 90),
         BookTop("A", 91, 94, yes_ask_size=150),
         91,
+        "daily_high",
     )
-    assert signal is not None and signal.gross_gap_cents == 6
+    fabricated = realized_threshold_signal(
+        ThresholdContract("B", "<=", 85),
+        BookTop("B", 35, 38, yes_ask_size=150),
+        71,
+        "daily_high",
+    )
+    assert locked is not None and locked.gross_gap_cents == 6
+    assert fabricated is None
 
 
-def test_bucket_elimination_is_first_class_no_signal():
-    signal = eliminated_bucket_signal(
+def test_daily_low_only_locks_lower_comparators():
+    locked = realized_threshold_signal(
+        ThresholdContract("A", "<=", 40),
+        BookTop("A", 91, 94, yes_ask_size=150),
+        39,
+        "daily_low",
+    )
+    wrong_direction = realized_threshold_signal(
+        ThresholdContract("B", ">=", 30),
+        BookTop("B", 91, 94, yes_ask_size=150),
+        39,
+        "daily_low",
+    )
+    assert locked is not None
+    assert wrong_direction is None
+
+
+def test_bucket_elimination_enforces_observation_direction():
+    high_signal = eliminated_bucket_signal(
         BucketContract("B", 85, 89, True, True),
         BookTop("B", 7, 10, yes_bid_size=80),
         90,
+        "daily_high",
     )
-    assert signal is not None and signal.side == "no" and signal.executable_price_cents == 93
+    low_signal = eliminated_bucket_signal(
+        BucketContract("C", 32, 36, True, False),
+        BookTop("C", 8, 11, yes_bid_size=60),
+        31,
+        "daily_low",
+    )
+    assert high_signal is not None and high_signal.side == "no"
+    assert low_signal is not None and low_signal.side == "no"
 
 
-def test_monotonicity_uses_executable_prices():
+def test_monotonicity_ge_ladder_uses_executable_prices_and_fee_gate():
     rows = monotonicity_violations(
         [ThresholdContract("L", ">=", 80), ThresholdContract("H", ">=", 90)],
-        {"L": BookTop("L", 9, 10, 100, 100), "H": BookTop("H", 12, 14, 50, 50)},
+        {"L": BookTop("L", 3, 4, 100, 100), "H": BookTop("H", 8, 10, 50, 50)},
     )
-    assert rows[0]["gross_lock_cents"] == 2 and rows[0]["max_size"] == 50
+    assert rows and rows[0]["gross_lock_cents"] == 4
+    assert rows[0]["net_lock_cents"] > 0
+
+
+def test_monotonicity_le_ladder_does_not_invert_valid_curve():
+    rows = monotonicity_violations(
+        [
+            ThresholdContract("A", "<=", 70),
+            ThresholdContract("B", "<=", 80),
+            ThresholdContract("C", "<=", 90),
+        ],
+        {
+            "A": BookTop("A", 31, 32, 100, 100),
+            "B": BookTop("B", 61, 62, 100, 100),
+            "C": BookTop("C", 89, 90, 100, 100),
+        },
+    )
+    assert rows == []
+
+
+def test_monotonicity_rejects_mixed_comparators():
+    with pytest.raises(ValueError):
+        monotonicity_violations(
+            [ThresholdContract("A", ">=", 70), ThresholdContract("B", "<=", 80)],
+            {},
+        )
+
+
+def test_monotonicity_drops_raw_lock_smaller_than_pair_fee():
+    rows = monotonicity_violations(
+        [ThresholdContract("L", ">=", 80), ThresholdContract("H", ">=", 90)],
+        {"L": BookTop("L", 49, 50, 100, 100), "H": BookTop("H", 51, 52, 100, 100)},
+    )
+    assert rows == []
 
 
 def test_exact_fill_conditional_ev_collapse():
@@ -44,6 +112,40 @@ def test_exact_fill_conditional_ev_collapse():
 
 def test_reconciliation_power_uses_all_station_days():
     assert ReconciliationStats(total=240, errors=0).wilson_upper() < 0.02
+
+
+def test_reconciliation_uses_integer_tenths_and_separate_signal_stats():
+    ledger = ReconciliationLedger()
+    ledger.add(
+        station_id="KNYC",
+        date="2026-07-27",
+        parsed_value=89.3000000001,
+        settled_value=89.3,
+        signal_fired=False,
+    )
+    ledger.add(
+        station_id="KNYC",
+        date="2026-07-28",
+        parsed_value=90.0,
+        settled_value=91.0,
+        signal_fired=True,
+    )
+    assert compare_settlement(89.3000000001, 89.3)
+    assert ledger.stats().total == 2 and ledger.stats().errors == 1
+    assert ledger.stats(signal_only=True).total == 1
+    assert ledger.stats(signal_only=True).errors == 1
+
+
+def test_sequence_gap_invalidates_book_until_fresh_snapshot():
+    tracker = SequenceTracker()
+    tracker.accept_snapshot(7, 100)
+    tracker.accept_delta(7, 101)
+    with pytest.raises(SequenceGapError):
+        tracker.accept_delta(7, 103)
+    with pytest.raises(SequenceGapError):
+        tracker.accept_delta(7, 104)
+    tracker.accept_snapshot(7, 200)
+    tracker.accept_delta(7, 201)
 
 
 def test_incentive_uses_measured_denominator_plus_reaction_haircut():
