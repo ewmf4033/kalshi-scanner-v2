@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
@@ -47,8 +48,33 @@ def _required_bool(market: dict[str, Any], field: str) -> bool:
     return value
 
 
+def _display_confirms_closed_integer_range(market: dict[str, Any], floor: float, cap: float) -> bool:
+    """Validate Kalshi's documented display range when inclusivity fields are absent."""
+    if not floor.is_integer() or not cap.is_integer():
+        return False
+    lo = int(floor)
+    hi = int(cap)
+    subtitle = str(market.get("subtitle") or "").strip()
+    title = str(market.get("title") or "")
+    subtitle_match = re.fullmatch(rf"{lo}\s*°?\s+to\s+{hi}\s*°?", subtitle, flags=re.IGNORECASE)
+    title_match = re.search(rf"(?<!\d){lo}\s*[-–]\s*{hi}\s*°", title)
+    return subtitle_match is not None or title_match is not None
+
+
+def _between_inclusivity(market: dict[str, Any], floor: float, cap: float) -> tuple[bool, bool]:
+    lower = market.get("lower_inclusive")
+    upper = market.get("upper_inclusive")
+    if isinstance(lower, bool) and isinstance(upper, bool):
+        return lower, upper
+    if lower is None and upper is None and _display_confirms_closed_integer_range(market, floor, cap):
+        return True, True
+    if lower is None and upper is None:
+        raise DiscoveryError("between inclusivity absent and display range is not an exact closed integer range")
+    raise DiscoveryError("between inclusivity fields must both be booleans or both be absent")
+
+
 def market_to_contract(market: dict[str, Any]):
-    """Map only explicit structured strike semantics; never infer from titles or null fields."""
+    """Map explicit strike semantics and authenticated Kalshi display metadata."""
     ticker = str(market.get("ticker") or "")
     if not ticker:
         raise DiscoveryError("market is missing ticker")
@@ -80,12 +106,13 @@ def market_to_contract(market: dict[str, Any]):
             raise DiscoveryError("between requires floor_strike and cap_strike")
         if floor > cap:
             raise DiscoveryError("floor strike exceeds cap strike")
+        lower_inclusive, upper_inclusive = _between_inclusivity(market, floor, cap)
         return BucketContract(
             ticker=ticker,
             lower=floor,
             upper=cap,
-            lower_inclusive=_required_bool(market, "lower_inclusive"),
-            upper_inclusive=_required_bool(market, "upper_inclusive"),
+            lower_inclusive=lower_inclusive,
+            upper_inclusive=upper_inclusive,
         )
     raise DiscoveryError(f"unsupported or missing strike_type {strike_type!r}")
 
@@ -140,8 +167,8 @@ def discover_definition(
 
     for market in markets:
         ticker = str(market.get("ticker") or "<missing>")
-        status = str(market.get("status") or "")
-        if status not in {"open", "unopened"}:
+        status = str(market.get("status") or "").strip().lower()
+        if status not in {"open", "unopened", "active"}:
             rejected.append((ticker, f"unsupported status {status!r}"))
             continue
         if horizon_end is not None:
