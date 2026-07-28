@@ -33,12 +33,8 @@ class WeatherResearchRunner:
     quote_first_seen: dict[tuple[str, str, int], datetime] = field(default_factory=dict)
 
     def current_error_bound(self) -> float:
-        """Baseline all-station-day bound supplies statistical power.
-
-        Fill-conditional reconciliation remains a separate bias diagnostic; it
-        must not silently replace the powered baseline with a tiny sample.
-        """
-        total, errors = self.store.reconciliation_counts(fill_only=False)
+        """Use the powered all-station-day cohort for the entry threshold."""
+        total, errors = self.store.reconciliation_counts()
         return ReconciliationStats(total=total, errors=errors).wilson_upper()
 
     def required_gap(self, price_cents: int, executable_size: int) -> float:
@@ -47,6 +43,25 @@ class WeatherResearchRunner:
             self.current_error_bound(), price_cents, contracts,
             slippage_cents=self.slippage_cents,
             safety_margin_cents=self.safety_margin_cents,
+        )
+
+    def reconciliation_bounds(self) -> dict[str, float]:
+        out: dict[str, float] = {}
+        for name, kwargs in (
+            ("baseline", {}), ("signal", {"signal_only": True}), ("fill", {"fill_only": True})
+        ):
+            total, errors = self.store.reconciliation_counts(**kwargs)
+            out[name] = ReconciliationStats(total, errors).wilson_upper()
+        return out
+
+    def reconcile_day(
+        self, *, station_id: str, date: str, parsed_value: float, settled_value: float,
+        signal_fired: bool, would_have_filled: bool, tolerance_tenths: int = 0,
+    ) -> None:
+        self.store.add_reconciliation(
+            station_id=station_id, date=date, parsed_value=parsed_value,
+            settled_value=settled_value, signal_fired=signal_fired,
+            would_have_filled=would_have_filled, tolerance_tenths=tolerance_tenths,
         )
 
     def ingest_book_message(self, message: dict) -> list[Signal]:
