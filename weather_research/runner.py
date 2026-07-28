@@ -10,7 +10,9 @@ from .observations import (
     StationObservation,
     apply_rule_rounding,
     climatological_date,
+    recompute_candidate_extremes,
     recompute_day_extreme,
+    rounding_candidates,
     update_running_extreme,
 )
 from .reconcile import ReconciliationStats
@@ -36,11 +38,12 @@ class WeatherResearchRunner:
     slippage_cents: float = 0.0
     books: OrderBookState = field(default_factory=OrderBookState)
     running_extremes: dict[tuple[str, date], float] = field(default_factory=dict)
+    candidate_extremes: dict[tuple[str, date], tuple[float, float]] = field(default_factory=dict)
     current_dates: dict[str, date] = field(default_factory=dict)
     quote_first_seen: dict[tuple[str, str, int], datetime] = field(default_factory=dict)
 
     def current_error_bound(self) -> float:
-        total, errors = self.store.reconciliation_counts()
+        total, errors = self.store.reconciliation_counts(candidate="selected")
         return ReconciliationStats(total=total, errors=errors).wilson_upper()
 
     def required_gap(self, price_cents: int, executable_size: int) -> float:
@@ -51,23 +54,38 @@ class WeatherResearchRunner:
             safety_margin_cents=self.safety_margin_cents,
         )
 
-    def reconciliation_bounds(self) -> dict[str, float]:
+    def reconciliation_bounds(self, *, candidate: str = "selected") -> dict[str, float]:
         out: dict[str, float] = {}
         for name, kwargs in (
             ("baseline", {}), ("signal", {"signal_only": True}), ("fill", {"fill_only": True})
         ):
-            total, errors = self.store.reconciliation_counts(**kwargs)
+            total, errors = self.store.reconciliation_counts(candidate=candidate, **kwargs)
             out[name] = ReconciliationStats(total, errors).wilson_upper()
         return out
 
     def reconcile_day(
-        self, *, station_id: str, date: str, parsed_value: float, settled_value: float,
-        signal_fired: bool, would_have_filled: bool, tolerance_tenths: int = 0,
+        self,
+        *,
+        station_id: str,
+        date: str,
+        parsed_cf_value: float,
+        parsed_c_value: float,
+        selected_parsed_value: float,
+        settled_value: float,
+        signal_fired: bool,
+        would_have_filled: bool,
+        tolerance_tenths: int = 0,
     ) -> None:
         self.store.add_reconciliation(
-            station_id=station_id, date=date, parsed_value=parsed_value,
-            settled_value=settled_value, signal_fired=signal_fired,
-            would_have_filled=would_have_filled, tolerance_tenths=tolerance_tenths,
+            station_id=station_id,
+            date=date,
+            parsed_cf_value=parsed_cf_value,
+            parsed_c_value=parsed_c_value,
+            selected_parsed_value=selected_parsed_value,
+            settled_value=settled_value,
+            signal_fired=signal_fired,
+            would_have_filled=would_have_filled,
+            tolerance_tenths=tolerance_tenths,
         )
 
     def ingest_book_message(self, message: dict) -> list[Signal]:
@@ -87,24 +105,43 @@ class WeatherResearchRunner:
             standard_utc_offset_minutes=rule.standard_utc_offset_minutes,
         )
 
-    def ingest_observation(self, station_id: str, temperature_f: float, observed_at: datetime) -> list[Signal]:
-        """Ingest one observation safely; quote survival always uses receipt time."""
+    def ingest_observation(self, station_id: str, temperature_c: float, observed_at: datetime) -> list[Signal]:
+        """Ingest raw Celsius; quote survival always uses wall-clock receipt time."""
         receipt_time = datetime.now(timezone.utc)
         emitted: list[Signal] = []
+        candidates = rounding_candidates(temperature_c)
+        raw_f = temperature_c * 9 / 5 + 32
         for definition in self.definitions.values():
             rule = definition.rule
             if rule.station_id != station_id:
                 continue
             local_date = self._climate_date(observed_at, rule)
-            rounded = apply_rule_rounding(temperature_f, rule.rounding)
+            selected = apply_rule_rounding(raw_f, rule.rounding)
             key = (rule.series_ticker, local_date)
-            running = update_running_extreme(
-                self.running_extremes.get(key), rounded, rule.observation_type
+            selected_running = update_running_extreme(
+                self.running_extremes.get(key), selected, rule.observation_type
             )
-            self.running_extremes[key] = running
+            previous_cf, previous_c = self.candidate_extremes.get(key, (None, None))
+            running_cf = update_running_extreme(
+                previous_cf, candidates.temperature_f_round_cf, rule.observation_type
+            )
+            running_c = update_running_extreme(
+                previous_c, candidates.temperature_f_round_c, rule.observation_type
+            )
+            self.running_extremes[key] = selected_running
+            self.candidate_extremes[key] = (running_cf, running_c)
             self.current_dates[rule.series_ticker] = local_date
             self.store.add_observation(
-                station_id, observed_at.isoformat(), rounded, running, rule.observation_type
+                station_id=station_id,
+                observed_at=observed_at.isoformat(),
+                temperature_c=temperature_c,
+                temperature_f_round_cf=candidates.temperature_f_round_cf,
+                temperature_f_round_c=candidates.temperature_f_round_c,
+                running_extreme_cf=running_cf,
+                running_extreme_c=running_c,
+                selected_temperature_f=selected,
+                selected_running_extreme_f=selected_running,
+                observation_type=rule.observation_type,
             )
             emitted.extend(self._evaluate_definition(definition, receipt_time, local_date))
         return emitted
@@ -112,7 +149,7 @@ class WeatherResearchRunner:
     def ingest_day_observations(
         self, series_ticker: str, observations: list[StationObservation], receipt_time: datetime | None = None
     ) -> list[Signal]:
-        """Recompute the current climate-day extreme from the complete observation set."""
+        """Recompute selected and candidate extremes from the complete climate-day set."""
         definition = self.definitions[series_ticker]
         rule = definition.rule
         if not observations:
@@ -122,14 +159,26 @@ class WeatherResearchRunner:
         if len(local_dates) != 1:
             raise ValueError("day observation batch crosses climatological dates")
         local_date = next(iter(local_dates))
-        running = recompute_day_extreme(observations, rule.observation_type, rule.rounding)
+        selected_running = recompute_day_extreme(observations, rule.observation_type, rule.rounding)
+        running_cf, running_c = recompute_candidate_extremes(observations, rule.observation_type)
         key = (series_ticker, local_date)
-        self.running_extremes[key] = running
+        self.running_extremes[key] = selected_running
+        self.candidate_extremes[key] = (running_cf, running_c)
         self.current_dates[series_ticker] = local_date
         latest = max(observations, key=lambda row: row.observed_at)
+        candidates = rounding_candidates(latest.temperature_c)
+        selected = apply_rule_rounding(latest.temperature_f, rule.rounding)
         self.store.add_observation(
-            rule.station_id, latest.observed_at.isoformat(),
-            apply_rule_rounding(latest.temperature_f, rule.rounding), running, rule.observation_type,
+            station_id=rule.station_id,
+            observed_at=latest.observed_at.isoformat(),
+            temperature_c=latest.temperature_c,
+            temperature_f_round_cf=candidates.temperature_f_round_cf,
+            temperature_f_round_c=candidates.temperature_f_round_c,
+            running_extreme_cf=running_cf,
+            running_extreme_c=running_c,
+            selected_temperature_f=selected,
+            selected_running_extreme_f=selected_running,
+            observation_type=rule.observation_type,
         )
         return self._evaluate_definition(definition, receipt_time, local_date)
 
