@@ -40,6 +40,8 @@ def market(
     lower_inclusive=None,
     upper_inclusive=None,
     close_time=None,
+    title="diagnostic only",
+    subtitle="",
 ):
     if close_time is None:
         close_time = (datetime.now(timezone.utc) + timedelta(hours=12)).isoformat()
@@ -51,7 +53,8 @@ def market(
         "cap_strike": cap,
         "is_provisional": provisional,
         "close_time": close_time,
-        "title": "diagnostic only",
+        "title": title,
+        "subtitle": subtitle,
     }
     if lower_inclusive is not None:
         row["lower_inclusive"] = lower_inclusive
@@ -77,14 +80,42 @@ def test_explicit_strike_types_map_without_title_or_null_inference():
     ) == BucketContract("MID", 80, 84, True, True)
 
 
+def test_authenticated_between_payload_uses_closed_display_range_when_booleans_absent():
+    row = market(
+        "KXHIGHNY-26JUL28-B77.5",
+        strike_type="between",
+        floor=77,
+        cap=78,
+        status="active",
+        title="Will the **high temp in NYC** be 77-78° on Jul 28, 2026?",
+        subtitle="77° to 78°",
+    )
+    assert market_to_contract(row) == BucketContract(row["ticker"], 77, 78, True, True)
+
+
+def test_between_without_booleans_or_exact_display_range_fails_closed():
+    with pytest.raises(DiscoveryError, match="display range"):
+        market_to_contract(market("BAD", strike_type="between", floor=80, cap=84))
+
+
+def test_between_with_only_one_inclusivity_field_fails_closed():
+    with pytest.raises(DiscoveryError, match="both be booleans"):
+        market_to_contract(
+            market("BAD", strike_type="between", floor=80, cap=84, lower_inclusive=True)
+        )
+
+
 def test_floor_only_does_not_imply_comparator():
     with pytest.raises(DiscoveryError, match="strike_type"):
         market_to_contract(market("BAD", strike_type="", floor=90))
 
 
-def test_between_requires_explicit_inclusivity():
-    with pytest.raises(DiscoveryError, match="lower_inclusive"):
-        market_to_contract(market("BAD", strike_type="between", floor=80, cap=84))
+def test_discovery_accepts_authenticated_active_status():
+    result = discover_definition(
+        rule(),
+        [market("GOOD", strike_type="greater", floor=84, status="active")],
+    )
+    assert result.accepted_tickers == ("GOOD",)
 
 
 def test_discovery_rejects_ambiguous_and_provisional_markets():
@@ -103,6 +134,21 @@ def test_discovery_rejects_ambiguous_and_provisional_markets():
 def test_discovery_fails_closed_when_nothing_is_usable():
     with pytest.raises(DiscoveryError):
         discover_definition(rule(), [market("BAD", strike_type="")])
+
+
+def test_authenticated_kxhighny_ladder_partitions_cleanly():
+    rows = [
+        market("T77", strike_type="less", cap=77, status="active", subtitle="76° or below"),
+        market("B77.5", strike_type="between", floor=77, cap=78, status="active", subtitle="77° to 78°"),
+        market("B79.5", strike_type="between", floor=79, cap=80, status="active", subtitle="79° to 80°"),
+        market("B81.5", strike_type="between", floor=81, cap=82, status="active", subtitle="81° to 82°"),
+        market("B83.5", strike_type="between", floor=83, cap=84, status="active", subtitle="83° to 84°"),
+        market("T84", strike_type="greater", floor=84, status="active", subtitle="85° or above"),
+    ]
+    result = discover_definition(rule(), rows)
+    assert len(result.definition.buckets) == 4
+    assert len(result.definition.thresholds) == 2
+    assert result.rejected == ()
 
 
 def test_integer_bucket_partition_accepts_adjacent_inclusive_ranges():
