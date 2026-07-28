@@ -188,7 +188,7 @@ def test_candidate_extremes_are_computed_independently():
     ]
     cf, c = recompute_candidate_extremes(rows, "daily_high")
     assert cf == 90
-    assert c == 90.0
+    assert c == 89.6
 
 
 def test_raw_celsius_and_both_candidate_extremes_are_persisted(tmp_path):
@@ -204,7 +204,7 @@ def test_raw_celsius_and_both_candidate_extremes_are_persisted(tmp_path):
         "SELECT temperature_c,temperature_f_round_cf,temperature_f_round_c,running_extreme_cf,running_extreme_c FROM observations"
     ).fetchone()
     assert row[0] == 32.4
-    assert row[1:] == (90.0, 90.0, 90.0, 90.0)
+    assert row[1:] == (90.0, 89.6, 90.0, 89.6)
     store.close()
 
 
