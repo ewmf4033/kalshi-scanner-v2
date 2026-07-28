@@ -104,7 +104,12 @@ class LiveWeatherLogger:
             for series_ticker, definition in self.config.definitions.items():
                 rule = definition.rule
                 try:
-                    start, end = local_day_window(receipt_time, rule.timezone)
+                    start, end = local_day_window(
+                        receipt_time,
+                        rule.timezone,
+                        time_basis=rule.time_basis,
+                        standard_utc_offset_minutes=rule.standard_utc_offset_minutes,
+                    )
                     rows = await asyncio.to_thread(self.nws.range, rule.station_id, start, end)
                     self.runner.ingest_day_observations(
                         series_ticker, rows, receipt_time=receipt_time
