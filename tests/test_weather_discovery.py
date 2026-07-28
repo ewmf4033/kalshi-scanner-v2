@@ -1,9 +1,13 @@
 import asyncio
-from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from weather_research.discovery import DiscoveryError, discover_definition, market_to_contract
+from weather_research.discovery import (
+    DiscoveryError,
+    discover_definition,
+    market_to_contract,
+    validate_bucket_partition,
+)
 from weather_research.live import LiveConfig, LiveWeatherLogger
 from weather_research.models import BucketContract, ThresholdContract, WeatherRule
 from weather_research.runner import MarketDefinition
@@ -23,32 +27,68 @@ def rule():
     )
 
 
-def market(ticker, *, floor=None, cap=None, status="open", provisional=False, close_hours=24):
-    close_time = (datetime.now(timezone.utc) + timedelta(hours=close_hours)).isoformat()
-    return {
+def market(
+    ticker,
+    *,
+    strike_type="greater_or_equal",
+    floor=None,
+    cap=None,
+    status="open",
+    provisional=False,
+    lower_inclusive=None,
+    upper_inclusive=None,
+):
+    row = {
         "ticker": ticker,
         "status": status,
+        "strike_type": strike_type,
         "floor_strike": floor,
         "cap_strike": cap,
         "is_provisional": provisional,
-        "close_time": close_time,
         "title": "diagnostic only",
     }
+    if lower_inclusive is not None:
+        row["lower_inclusive"] = lower_inclusive
+    if upper_inclusive is not None:
+        row["upper_inclusive"] = upper_inclusive
+    return row
 
 
-def test_structured_strikes_map_without_title_parsing():
-    lower = market_to_contract(market("LOW", cap=79))
-    middle = market_to_contract(market("MID", floor=80, cap=84))
-    upper = market_to_contract(market("HIGH", floor=85))
-    assert lower == ThresholdContract("LOW", "<=", 79)
-    assert middle == BucketContract("MID", 80, 84, True, True)
-    assert upper == ThresholdContract("HIGH", ">=", 85)
+def test_explicit_strike_types_map_without_title_or_null_inference():
+    assert market_to_contract(market("GT", strike_type="greater", floor=79)) == ThresholdContract("GT", ">", 79)
+    assert market_to_contract(market("GE", strike_type="greater_or_equal", floor=80)) == ThresholdContract("GE", ">=", 80)
+    assert market_to_contract(market("LT", strike_type="less", cap=84)) == ThresholdContract("LT", "<", 84)
+    assert market_to_contract(market("LE", strike_type="less_or_equal", cap=85)) == ThresholdContract("LE", "<=", 85)
+    assert market_to_contract(
+        market(
+            "MID",
+            strike_type="between",
+            floor=80,
+            cap=84,
+            lower_inclusive=True,
+            upper_inclusive=True,
+        )
+    ) == BucketContract("MID", 80, 84, True, True)
+
+
+def test_floor_only_does_not_imply_comparator():
+    with pytest.raises(DiscoveryError, match="strike_type"):
+        market_to_contract(market("BAD", strike_type="", floor=90))
+
+
+def test_between_requires_explicit_inclusivity():
+    with pytest.raises(DiscoveryError, match="lower_inclusive"):
+        market_to_contract(market("BAD", strike_type="between", floor=80, cap=84))
 
 
 def test_discovery_rejects_ambiguous_and_provisional_markets():
     result = discover_definition(
         rule(),
-        [market("GOOD", floor=90), market("AMBIG"), market("PROV", floor=91, provisional=True)],
+        [
+            market("GOOD", strike_type="greater_or_equal", floor=90),
+            market("AMBIG", strike_type="mystery", floor=91),
+            market("PROV", strike_type="greater_or_equal", floor=91, provisional=True),
+        ],
     )
     assert result.accepted_tickers == ("GOOD",)
     assert {ticker for ticker, _ in result.rejected} == {"AMBIG", "PROV"}
@@ -56,29 +96,44 @@ def test_discovery_rejects_ambiguous_and_provisional_markets():
 
 def test_discovery_fails_closed_when_nothing_is_usable():
     with pytest.raises(DiscoveryError):
-        discover_definition(rule(), [market("BAD")])
+        discover_definition(rule(), [market("BAD", strike_type="")])
 
 
-def test_discovery_horizon_excludes_far_future_markets():
-    now = datetime.now(timezone.utc)
-    result = discover_definition(
-        rule(),
-        [market("NEAR", floor=90, close_hours=24), market("FAR", floor=91, close_hours=240)],
-        now=now,
-        horizon_hours=72,
+def test_integer_bucket_partition_accepts_adjacent_inclusive_ranges():
+    validate_bucket_partition(
+        [
+            BucketContract("A", 84, 85, True, True),
+            BucketContract("B", 86, 87, True, True),
+        ]
     )
-    assert result.accepted_tickers == ("NEAR",)
-    assert ("FAR", "outside discovery horizon") in result.rejected
+
+
+def test_integer_bucket_partition_rejects_overlap_and_gap():
+    with pytest.raises(DiscoveryError, match="overlap"):
+        validate_bucket_partition(
+            [
+                BucketContract("A", 84, 85, True, True),
+                BucketContract("B", 85, 86, True, True),
+            ]
+        )
+    with pytest.raises(DiscoveryError, match="gap"):
+        validate_bucket_partition(
+            [
+                BucketContract("A", 84, 85, True, False),
+                BucketContract("B", 86, 87, True, True),
+            ]
+        )
 
 
 class FakeKalshi:
     websocket_url = "wss://example.invalid"
 
     def __init__(self):
-        self.rows = [market("DAY1", floor=90)]
+        self.rows = [market("DAY1", strike_type="greater_or_equal", floor=90)]
 
-    def list_markets(self, *, series_ticker):
+    def list_markets(self, *, series_ticker, statuses=("open", "unopened")):
         assert series_ticker == "KXHIGHNY"
+        assert tuple(statuses) == ("open", "unopened")
         return list(self.rows)
 
 
@@ -89,14 +144,13 @@ def test_catalog_roll_replaces_tickers_and_clears_books(tmp_path):
         database_path=str(tmp_path / "research.sqlite"),
         auto_discover=True,
         discovery_seconds=30,
-        discovery_horizon_hours=72,
     )
     logger = LiveWeatherLogger(config, kalshi=fake)
     assert asyncio.run(logger._refresh_catalog()) is True
     assert config.market_tickers == ["DAY1"]
 
     logger.runner.quote_first_seen[("DAY1", "yes", 90)] = None
-    fake.rows = [market("DAY2", floor=91, status="unopened")]
+    fake.rows = [market("DAY2", strike_type="greater", floor=91, status="unopened")]
     assert asyncio.run(logger._refresh_catalog()) is True
     assert config.market_tickers == ["DAY2"]
     assert logger.runner.quote_first_seen == {}
@@ -111,7 +165,6 @@ def test_catalog_unchanged_does_not_reset_state(tmp_path):
         database_path=str(tmp_path / "research.sqlite"),
         auto_discover=True,
         discovery_seconds=30,
-        discovery_horizon_hours=72,
     )
     logger = LiveWeatherLogger(config, kalshi=fake)
     assert asyncio.run(logger._refresh_catalog()) is True
