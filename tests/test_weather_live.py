@@ -1,9 +1,16 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from weather_research.book_state import OrderBookState
 from weather_research.models import ThresholdContract, WeatherRule
+from weather_research.observations import (
+    StationObservation,
+    apply_rule_rounding,
+    climatological_date,
+    local_day_window,
+    recompute_day_extreme,
+)
 from weather_research.runner import MarketDefinition, WeatherResearchRunner
 from weather_research.storage import ResearchStore
 from weather_research.ws_protocol import SequenceGapError
@@ -86,3 +93,58 @@ def test_observation_and_book_emit_read_only_signal(tmp_path):
     assert signals and signals[0].ticker == "T"
     assert store.conn.execute("SELECT COUNT(*) FROM signals").fetchone()[0] == 1
     store.close()
+
+
+def test_running_extreme_resets_by_local_climatological_date(tmp_path):
+    store = ResearchStore(tmp_path / "research.sqlite")
+    rule = WeatherRule("S", "KNYC", "America/New_York", "daily_high", "nearest_int", "final", "NWS")
+    runner = WeatherResearchRunner(
+        {"S": MarketDefinition(rule, thresholds=(ThresholdContract("T", ">=", 90),))}, store
+    )
+    runner.ingest_book_message(snapshot())
+    day_one = datetime(2026, 7, 27, 20, 0, tzinfo=timezone.utc)  # 16:00 EDT
+    day_two = datetime(2026, 7, 28, 5, 5, tzinfo=timezone.utc)   # 01:05 EDT
+    runner.ingest_observation("KNYC", 95, day_one)
+    signals = runner.ingest_observation("KNYC", 68, day_two)
+    assert climatological_date(day_one, rule.timezone) != climatological_date(day_two, rule.timezone)
+    assert runner.running_extremes[("S", climatological_date(day_two, rule.timezone))] == 68
+    assert signals == []
+    store.close()
+
+
+def test_full_day_recompute_recovers_missed_peak():
+    rows = [
+        StationObservation("KNYC", datetime(2026, 7, 27, 14, tzinfo=timezone.utc), 20.0),
+        StationObservation("KNYC", datetime(2026, 7, 27, 18, tzinfo=timezone.utc), 35.0),
+        StationObservation("KNYC", datetime(2026, 7, 27, 22, tzinfo=timezone.utc), 25.0),
+    ]
+    assert recompute_day_extreme(rows, "daily_high", "nearest_int") == 95
+
+
+def test_rule_rounding_is_applied_at_signal_boundary():
+    assert apply_rule_rounding(89.996, "nearest_int") == 90
+    assert apply_rule_rounding(89.996, "floor") == 89
+    assert apply_rule_rounding(89.001, "ceil") == 90
+
+
+def test_quote_survival_uses_receipt_time_not_stale_observation_time(tmp_path):
+    store = ResearchStore(tmp_path / "research.sqlite")
+    rule = WeatherRule("S", "KNYC", "America/New_York", "daily_high", "nearest_int", "final", "NWS")
+    runner = WeatherResearchRunner(
+        {"S": MarketDefinition(rule, thresholds=(ThresholdContract("T", ">=", 80),))},
+        store,
+        min_survival_seconds=3,
+    )
+    runner.ingest_book_message(snapshot())
+    stale_observed_at = datetime.now(timezone.utc) - timedelta(minutes=8)
+    runner.ingest_observation("KNYC", 81, stale_observed_at)
+    age = store.conn.execute("SELECT quote_age_seconds FROM signals ORDER BY id DESC LIMIT 1").fetchone()[0]
+    assert age < 1
+    store.close()
+
+
+def test_local_day_window_starts_at_station_midnight():
+    now = datetime(2026, 7, 28, 5, 5, tzinfo=timezone.utc)  # 01:05 EDT
+    start, end = local_day_window(now, "America/New_York")
+    assert start == datetime(2026, 7, 28, 4, 0, tzinfo=timezone.utc)
+    assert end == now
