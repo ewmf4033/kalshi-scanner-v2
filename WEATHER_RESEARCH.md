@@ -7,7 +7,9 @@ This package is a read-only falsification experiment. It does not place orders.
 - Authenticated Kalshi WebSocket connection using the recommended external API host.
 - `use_yes_price: true` subscription and current fixed-point snapshot/delta parsing.
 - Sequence-safe book state: any gap or uncertain top-level depletion discards local state and requests a fresh snapshot.
-- NWS latest-observation polling.
+- NWS full-local-day observation polling, recomputing each daily extreme from all available observations on every poll.
+- Running extremes keyed by `(series_ticker, climatological_date)` using each rule's configured timezone.
+- Rule-driven weather rounding before threshold evaluation.
 - SQLite persistence for raw book messages, observations, signals, and reconciliations.
 - A runner that computes the minimum acceptable gap from the current all-station-day Wilson upper bound. There is no fixed entry threshold.
 - Separate baseline, signal-conditioned, and would-have-filled reconciliation bounds.
@@ -24,6 +26,10 @@ python -m weather_research.live --config weather_research.json
 ```
 
 The logger uses `wss://external-api-ws.kalshi.com/trade-api/ws/v2` and signs `/trade-api/ws/v2`. These may be overridden with `KALSHI_WS_URL` and `KALSHI_REST_URL` for demo testing.
+
+## Daily operating requirement
+
+Enter the official rulebook-named settlement value through `runner.reconcile_day()` every day from day one. Do not defer this to a month-end backfill. With zero reconciliation rows, the Wilson upper bound is 100%, the required gap exceeds $1.00, and no signal can be classified as `would_have_filled`.
 
 ## Scope
 
@@ -49,7 +55,7 @@ For a contract bought at price `p` cents and believed certain:
 
 The powered baseline cohort sets the automated gap threshold. Signal-days and would-have-filled days remain separate bias diagnostics. The system never substitutes a tiny fill-only sample for the baseline and never permits a config constant to override the evidence-derived gap.
 
-Weather values are normalized to integer tenths using decimal half-up rounding, avoiding Python banker's rounding at exact boundaries.
+Weather values are normalized to the configured rule precision before signal evaluation, and settlement comparisons use integer tenths with decimal half-up normalization.
 
 ## Validation
 
@@ -59,4 +65,4 @@ Run:
 pytest -q tests/test_weather_research.py tests/test_weather_live.py
 ```
 
-The focused tests cover unified YES pricing, intraday-safe certainty direction, bucket elimination, comparator-aware monotonicity, depth-aware fee rounding, error-derived thresholds, reconciliation cohorts, decimal half-up boundaries, persistence, and sequence-gap poisoning.
+The focused tests cover unified YES pricing, intraday-safe certainty direction, bucket elimination, comparator-aware monotonicity, depth-aware fee rounding, error-derived thresholds, climatological-day resets, full-day observation recomputation, receipt-time quote aging, reconciliation cohorts, decimal half-up boundaries, persistence, and sequence-gap poisoning.
