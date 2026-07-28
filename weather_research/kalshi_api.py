@@ -70,14 +70,17 @@ class KalshiClient:
         statuses: Iterable[str] = ("open", "unopened"),
         limit: int = 1000,
     ) -> list[dict[str, Any]]:
-        """Return every current market for a series, following Kalshi cursors."""
+        """Return every requested-status market for a series, following Kalshi cursors."""
         if not series_ticker:
             raise ValueError("series_ticker is required")
         if not 1 <= limit <= 1000:
             raise ValueError("limit must be between 1 and 1000")
+        normalized_statuses = tuple(dict.fromkeys(str(status) for status in statuses))
+        if not normalized_statuses:
+            raise ValueError("at least one status is required")
         markets: list[dict[str, Any]] = []
         seen_tickers: set[str] = set()
-        for status in statuses:
+        for status in normalized_statuses:
             cursor = ""
             while True:
                 params: dict[str, Any] = {
