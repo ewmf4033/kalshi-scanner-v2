@@ -1,31 +1,22 @@
 {
   "database_path": "weather_research.sqlite3",
   "poll_seconds": 60,
+  "auto_discover": true,
+  "discovery_seconds": 900,
+  "discovery_horizon_hours": 72,
   "markets": [
     {
       "rule": {
-        "series_ticker": "REPLACE_WITH_SERIES",
+        "series_ticker": "KXHIGHNY",
         "station_id": "KNYC",
         "timezone": "America/New_York",
         "time_basis": "local_standard",
         "standard_utc_offset_minutes": -300,
         "observation_type": "daily_high",
         "rounding": "nearest_int",
-        "revision_policy": "REPLACE_AFTER_RULE_AUDIT",
+        "revision_policy": "REPLACE_AFTER_FINAL_CLI_RULE_AUDIT",
         "source_name": "NWS CLINYC"
-      },
-      "thresholds": [
-        {"ticker": "REPLACE_WITH_MARKET_TICKER", "comparator": ">=", "threshold": 90}
-      ],
-      "buckets": [
-        {
-          "ticker": "REPLACE_WITH_BUCKET_TICKER",
-          "lower": 85,
-          "upper": 89,
-          "lower_inclusive": true,
-          "upper_inclusive": true
-        }
-      ]
+      }
     }
   ]
 }

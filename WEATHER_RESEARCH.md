@@ -6,6 +6,8 @@ This package is a read-only falsification experiment. It does not place orders.
 
 - Authenticated Kalshi WebSocket connection using the recommended external API host.
 - `use_yes_price: true` subscription and current fixed-point snapshot/delta parsing.
+- Automatic recurring-market discovery from `GET /markets?series_ticker=...` for open and unopened contracts.
+- Contract-roll handling that clears old books and quote clocks, then reconnects with the new exact ticker set.
 - Sequence-safe book state: any gap or uncertain top-level depletion discards local state and requests a fresh snapshot.
 - NWS full-climate-day observation polling, recomputing each daily extreme from all available observations on every poll.
 - Running extremes keyed by `(series_ticker, climatological_date)` using each rule's configured time basis.
@@ -17,7 +19,7 @@ This package is a read-only falsification experiment. It does not place orders.
 
 ## Start
 
-1. Copy `weather_research.example.json` and replace every placeholder only after the settlement-rule audit.
+1. Copy `weather_research.example.json` and finish the settlement-rule audit fields.
 2. Set `KALSHI_API_KEY_ID` and either `KALSHI_PRIVATE_KEY_PEM` or `KALSHI_PRIVATE_KEY_PATH`.
 3. Install `requirements-weather.txt`.
 4. Run:
@@ -27,6 +29,39 @@ python -m weather_research.live --config weather_research.json
 ```
 
 The logger uses `wss://external-api-ws.kalshi.com/trade-api/ws/v2` and signs `/trade-api/ws/v2`. These may be overridden with `KALSHI_WS_URL` and `KALSHI_REST_URL` for demo testing.
+
+## Automatic ticker discovery
+
+Set:
+
+```json
+"auto_discover": true,
+"discovery_seconds": 900
+```
+
+For every configured `series_ticker`, the logger retrieves open and unopened markets, follows pagination cursors, bounds the catalog to the configured near-term horizon, and rebuilds the active contract set.
+
+Discovery uses `strike_type` as authority and never infers a comparator from which strike field happens to be populated:
+
+- `greater` → `>` with `floor_strike`;
+- `greater_or_equal` → `>=` with `floor_strike`;
+- `less` → `<` with `cap_strike`;
+- `less_or_equal` → `<=` with `cap_strike`;
+- `between` → an interval only when both bounds and explicit `lower_inclusive` / `upper_inclusive` booleans are present.
+
+Unknown strike types, inconsistent fields, missing inclusivity, invalid bounds, unsupported status, duplicate ticker, or `is_provisional=true` are rejected. Titles are diagnostics only and are never parsed as settlement authority.
+
+Adjacent integer-settlement buckets are validated as a partition. Overlap, a missing integer, or double ownership of a shared boundary fails discovery rather than generating signals.
+
+Before merge or first launch, run the authenticated audit dump and compare it with the live market labels:
+
+```bash
+python -m weather_research.catalog_dump --series KXHIGHNY
+```
+
+The dump prints `ticker`, `strike_type`, `floor_strike`, `cap_strike`, inclusivity fields, `status`, and `close_time` for the full open/unopened ladder.
+
+If the API call fails, the last valid catalog remains active; if a successful refresh returns no usable contracts, the logger disconnects and keeps polling rather than carrying yesterday's tickers forward. A changed ticker set clears every local book and quote-survival clock before reconnecting. No state crosses a contract roll.
 
 ## Climate clock guard
 
@@ -54,6 +89,8 @@ The source of truth is the raw Celsius observation. Every stored observation als
 - `running_extreme_cf`, `running_extreme_c`, and `running_extreme_cff`, each computed independently over the climate day.
 
 Every reconciliation stores all three candidate parsed values and agreement flags against the final settlement. The active signal path remains the explicitly configured rule path. For the current CLINYC example, `nearest_int` on the raw converted Fahrenheit value is the selected `cf` path unless reconciliation evidence supports a different mechanism.
+
+**Do not trade while `cf` versus `cff` remains unresolved.** Signals collected during that period are research observations only. The venue is read-only regardless, but this is also the statistical go/no-go rule for any later execution work.
 
 ## Rulebook rounding guard
 
@@ -90,7 +127,7 @@ Weather values are normalized to the configured rule precision before signal eva
 Run:
 
 ```bash
-pytest -q tests/test_weather_research.py tests/test_weather_live.py tests/test_weather_rounding_candidates.py
+pytest -q tests/test_weather_research.py tests/test_weather_live.py tests/test_weather_rounding_candidates.py tests/test_weather_discovery.py
 ```
 
-The focused suite covers unified YES pricing, intraday-safe certainty direction, bucket elimination, comparator-aware monotonicity, depth-aware fee rounding, error-derived thresholds, civil and fixed-standard climatological-day resets, full-day observation recomputation, receipt-time quote aging, three-path rounding persistence and reconciliation, decimal half-up boundaries, persistence, and sequence-gap poisoning.
+The focused suite covers unified YES pricing, ticker pagination and rolling, explicit strike-type mapping, bucket partition guards, intraday-safe certainty direction, bucket elimination, comparator-aware monotonicity, depth-aware fee rounding, error-derived thresholds, civil and fixed-standard climatological-day resets, full-day observation recomputation, receipt-time quote aging, three-path rounding persistence and reconciliation, decimal half-up boundaries, persistence, and sequence-gap poisoning.

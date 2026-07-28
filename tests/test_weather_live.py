@@ -108,11 +108,17 @@ def test_reconciliation_preserves_both_rounding_hypotheses(tmp_path):
 def test_observation_and_book_emit_read_only_signal(tmp_path):
     store = ResearchStore(tmp_path / "research.sqlite")
     rule = WeatherRule("S", "KNYC", "America/New_York", "daily_high", "nearest_int", "final", "NWS")
+    observed_at = datetime.now(timezone.utc)
+    event_date = climatological_date(observed_at, rule.timezone)
     runner = WeatherResearchRunner(
-        {"S": MarketDefinition(rule, thresholds=(ThresholdContract("T", ">=", 80),))}, store
+        {"S": MarketDefinition(
+            rule,
+            thresholds=(ThresholdContract("T", ">=", 80, event_date=event_date),),
+        )},
+        store,
     )
     runner.ingest_book_message(snapshot())
-    signals = runner.ingest_observation("KNYC", f_to_c(81), datetime.now(timezone.utc))
+    signals = runner.ingest_observation("KNYC", f_to_c(81), observed_at)
     assert signals and signals[0].ticker == "T"
     assert store.conn.execute("SELECT COUNT(*) FROM signals").fetchone()[0] == 1
     store.close()
@@ -224,13 +230,17 @@ def test_rule_rounding_is_applied_at_signal_boundary():
 def test_quote_survival_uses_receipt_time_not_stale_observation_time(tmp_path):
     store = ResearchStore(tmp_path / "research.sqlite")
     rule = WeatherRule("S", "KNYC", "America/New_York", "daily_high", "nearest_int", "final", "NWS")
+    stale_observed_at = datetime.now(timezone.utc) - timedelta(minutes=8)
+    event_date = climatological_date(stale_observed_at, rule.timezone)
     runner = WeatherResearchRunner(
-        {"S": MarketDefinition(rule, thresholds=(ThresholdContract("T", ">=", 80),))},
+        {"S": MarketDefinition(
+            rule,
+            thresholds=(ThresholdContract("T", ">=", 80, event_date=event_date),),
+        )},
         store,
         min_survival_seconds=3,
     )
     runner.ingest_book_message(snapshot())
-    stale_observed_at = datetime.now(timezone.utc) - timedelta(minutes=8)
     runner.ingest_observation("KNYC", f_to_c(81), stale_observed_at)
     age = store.conn.execute("SELECT quote_age_seconds FROM signals ORDER BY id DESC LIMIT 1").fetchone()[0]
     assert age < 1
