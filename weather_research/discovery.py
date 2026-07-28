@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
@@ -41,15 +42,8 @@ def _timestamp(value: Any) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
-def _required_bool(market: dict[str, Any], field: str) -> bool:
-    value = market.get(field)
-    if not isinstance(value, bool):
-        raise DiscoveryError(f"strike_type=between requires explicit boolean {field}")
-    return value
-
-
 def _display_confirms_closed_integer_range(market: dict[str, Any], floor: float, cap: float) -> bool:
-    """Validate Kalshi's documented display range when inclusivity fields are absent."""
+    """Validate Kalshi's display range when inclusivity fields are absent."""
     if not floor.is_integer() or not cap.is_integer():
         return False
     lo = int(floor)
@@ -71,6 +65,13 @@ def _between_inclusivity(market: dict[str, Any], floor: float, cap: float) -> tu
     if lower is None and upper is None:
         raise DiscoveryError("between inclusivity absent and display range is not an exact closed integer range")
     raise DiscoveryError("between inclusivity fields must both be booleans or both be absent")
+
+
+def _event_ticker(market_ticker: str) -> str:
+    """Return the Kalshi event ticker by removing the final market suffix."""
+    if "-" not in market_ticker:
+        raise DiscoveryError(f"market ticker lacks event suffix: {market_ticker!r}")
+    return market_ticker.rsplit("-", 1)[0]
 
 
 def market_to_contract(market: dict[str, Any]):
@@ -158,6 +159,7 @@ def discover_definition(
 ) -> DiscoveryResult:
     thresholds: list[ThresholdContract] = []
     buckets: list[BucketContract] = []
+    bucket_events: dict[str, list[BucketContract]] = defaultdict(list)
     rejected: list[tuple[str, str]] = []
     seen: set[str] = set()
     if horizon_hours is not None and horizon_hours <= 0:
@@ -195,16 +197,28 @@ def discover_definition(
         if isinstance(contract, ThresholdContract):
             thresholds.append(contract)
         else:
+            try:
+                event_ticker = _event_ticker(contract.ticker)
+            except DiscoveryError as exc:
+                rejected.append((contract.ticker, str(exc)))
+                seen.remove(contract.ticker)
+                continue
             buckets.append(contract)
+            bucket_events[event_ticker].append(contract)
 
     thresholds.sort(key=lambda row: (row.threshold, row.ticker))
     buckets.sort(key=lambda row: (
+        row.ticker.rsplit("-", 1)[0],
         float("-inf") if row.lower is None else row.lower,
         float("inf") if row.upper is None else row.upper,
         row.ticker,
     ))
-    if len(buckets) > 1:
-        validate_bucket_partition(buckets)
+    for event_ticker, event_buckets in bucket_events.items():
+        if len(event_buckets) > 1:
+            try:
+                validate_bucket_partition(event_buckets)
+            except DiscoveryError as exc:
+                raise DiscoveryError(f"{event_ticker}: {exc}") from exc
     definition = MarketDefinition(rule=rule, thresholds=tuple(thresholds), buckets=tuple(buckets))
     accepted = tuple(sorted(seen))
     if require_nonempty and not accepted:
