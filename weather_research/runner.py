@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from .book_state import OrderBookState
 from .ev import minimum_gap_cents
 from .models import BucketContract, Signal, ThresholdContract, WeatherRule
-from .observations import update_running_extreme
+from .observations import (
+    StationObservation,
+    apply_rule_rounding,
+    climatological_date,
+    recompute_day_extreme,
+    update_running_extreme,
+)
 from .reconcile import ReconciliationStats
 from .signals import eliminated_bucket_signal, realized_threshold_signal
 from .storage import ResearchStore
@@ -29,11 +35,11 @@ class WeatherResearchRunner:
     safety_margin_cents: float = 1.0
     slippage_cents: float = 0.0
     books: OrderBookState = field(default_factory=OrderBookState)
-    running_extremes: dict[str, float] = field(default_factory=dict)
+    running_extremes: dict[tuple[str, date], float] = field(default_factory=dict)
+    current_dates: dict[str, date] = field(default_factory=dict)
     quote_first_seen: dict[tuple[str, str, int], datetime] = field(default_factory=dict)
 
     def current_error_bound(self) -> float:
-        """Use the powered all-station-day cohort for the entry threshold."""
         total, errors = self.store.reconciliation_counts()
         return ReconciliationStats(total=total, errors=errors).wilson_upper()
 
@@ -73,31 +79,74 @@ class WeatherResearchRunner:
         return self._evaluate_ticker(book.ticker, now)
 
     def ingest_observation(self, station_id: str, temperature_f: float, observed_at: datetime) -> list[Signal]:
+        """Ingest one observation safely; quote survival always uses receipt time."""
+        receipt_time = datetime.now(timezone.utc)
         emitted: list[Signal] = []
         for definition in self.definitions.values():
             rule = definition.rule
             if rule.station_id != station_id:
                 continue
+            local_date = climatological_date(observed_at, rule.timezone)
+            rounded = apply_rule_rounding(temperature_f, rule.rounding)
+            key = (rule.series_ticker, local_date)
             running = update_running_extreme(
-                self.running_extremes.get(rule.series_ticker), temperature_f, rule.observation_type
+                self.running_extremes.get(key), rounded, rule.observation_type
             )
-            self.running_extremes[rule.series_ticker] = running
+            self.running_extremes[key] = running
+            self.current_dates[rule.series_ticker] = local_date
             self.store.add_observation(
-                station_id, observed_at.isoformat(), temperature_f, running, rule.observation_type
+                station_id, observed_at.isoformat(), rounded, running, rule.observation_type
             )
-            tickers = [c.ticker for c in definition.thresholds] + [c.ticker for c in definition.buckets]
-            for ticker in tickers:
-                emitted.extend(self._evaluate_ticker(ticker, observed_at))
+            emitted.extend(self._evaluate_definition(definition, receipt_time, local_date))
         return emitted
 
-    def _evaluate_ticker(self, ticker: str, now: datetime) -> list[Signal]:
+    def ingest_day_observations(
+        self, series_ticker: str, observations: list[StationObservation], receipt_time: datetime | None = None
+    ) -> list[Signal]:
+        """Recompute the current local-day extreme from the complete observation set."""
+        definition = self.definitions[series_ticker]
+        rule = definition.rule
+        if not observations:
+            return []
+        receipt_time = receipt_time or datetime.now(timezone.utc)
+        local_dates = {climatological_date(row.observed_at, rule.timezone) for row in observations}
+        if len(local_dates) != 1:
+            raise ValueError("day observation batch crosses climatological dates")
+        local_date = next(iter(local_dates))
+        running = recompute_day_extreme(observations, rule.observation_type, rule.rounding)
+        key = (series_ticker, local_date)
+        self.running_extremes[key] = running
+        self.current_dates[series_ticker] = local_date
+        latest = max(observations, key=lambda row: row.observed_at)
+        self.store.add_observation(
+            rule.station_id, latest.observed_at.isoformat(),
+            apply_rule_rounding(latest.temperature_f, rule.rounding), running, rule.observation_type,
+        )
+        return self._evaluate_definition(definition, receipt_time, local_date)
+
+    def _evaluate_definition(
+        self, definition: MarketDefinition, now: datetime, local_date: date
+    ) -> list[Signal]:
+        emitted: list[Signal] = []
+        tickers = [c.ticker for c in definition.thresholds] + [c.ticker for c in definition.buckets]
+        for ticker in tickers:
+            emitted.extend(self._evaluate_ticker(ticker, now, local_date=local_date))
+        return emitted
+
+    def _evaluate_ticker(
+        self, ticker: str, now: datetime, local_date: date | None = None
+    ) -> list[Signal]:
         book = self.books.books.get(ticker)
         if book is None:
             self._clear_quote_age(ticker)
             return []
         out: list[Signal] = []
         for definition in self.definitions.values():
-            running = self.running_extremes.get(definition.rule.series_ticker)
+            series = definition.rule.series_ticker
+            active_date = local_date or self.current_dates.get(series)
+            if active_date is None:
+                continue
+            running = self.running_extremes.get((series, active_date))
             if running is None:
                 continue
             for contract in definition.thresholds:
