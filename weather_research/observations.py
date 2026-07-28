@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from math import ceil, floor
 from typing import Any
@@ -67,17 +67,55 @@ class NWSObservationClient:
         return StationObservation(station_id, observed_at.astimezone(timezone.utc), float(value))
 
 
-def climatological_date(observed_at: datetime, timezone_name: str):
+def climate_timezone(
+    timezone_name: str,
+    *,
+    time_basis: str = "civil",
+    standard_utc_offset_minutes: int | None = None,
+):
+    if time_basis == "civil":
+        if standard_utc_offset_minutes is not None:
+            raise ValueError("civil time cannot specify a fixed standard offset")
+        return ZoneInfo(timezone_name)
+    if time_basis == "local_standard":
+        if standard_utc_offset_minutes is None:
+            raise ValueError("local_standard time requires standard_utc_offset_minutes")
+        return timezone(timedelta(minutes=standard_utc_offset_minutes), name=f"LST{standard_utc_offset_minutes:+d}")
+    raise ValueError(f"unsupported time_basis: {time_basis}")
+
+
+def climatological_date(
+    observed_at: datetime,
+    timezone_name: str,
+    *,
+    time_basis: str = "civil",
+    standard_utc_offset_minutes: int | None = None,
+):
     if observed_at.tzinfo is None:
         raise ValueError("observed_at must be timezone-aware")
-    return observed_at.astimezone(ZoneInfo(timezone_name)).date()
+    zone = climate_timezone(
+        timezone_name,
+        time_basis=time_basis,
+        standard_utc_offset_minutes=standard_utc_offset_minutes,
+    )
+    return observed_at.astimezone(zone).date()
 
 
-def local_day_window(now: datetime, timezone_name: str) -> tuple[datetime, datetime]:
-    """Return local midnight through now as timezone-aware UTC datetimes."""
+def local_day_window(
+    now: datetime,
+    timezone_name: str,
+    *,
+    time_basis: str = "civil",
+    standard_utc_offset_minutes: int | None = None,
+) -> tuple[datetime, datetime]:
+    """Return climate-day midnight through now as timezone-aware UTC datetimes."""
     if now.tzinfo is None:
         raise ValueError("now must be timezone-aware")
-    zone = ZoneInfo(timezone_name)
+    zone = climate_timezone(
+        timezone_name,
+        time_basis=time_basis,
+        standard_utc_offset_minutes=standard_utc_offset_minutes,
+    )
     local_now = now.astimezone(zone)
     local_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
     return local_start.astimezone(timezone.utc), now.astimezone(timezone.utc)
