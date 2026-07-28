@@ -5,6 +5,7 @@ import pytest
 from weather_research.discovery import (
     DiscoveryError,
     discover_definition,
+    discover_all,
     market_to_contract,
     validate_bucket_partition,
 )
@@ -130,11 +131,20 @@ class FakeKalshi:
 
     def __init__(self):
         self.rows = [market("DAY1", strike_type="greater_or_equal", floor=90)]
+        self.calls = []
 
     def list_markets(self, *, series_ticker, statuses=("open", "unopened")):
+        self.calls.append((series_ticker, tuple(statuses)))
         assert series_ticker == "KXHIGHNY"
         assert tuple(statuses) == ("open", "unopened")
         return list(self.rows)
+
+
+def test_discover_all_pushes_status_filter_into_request():
+    fake = FakeKalshi()
+    result = discover_all(fake, {"KXHIGHNY": MarketDefinition(rule())})
+    assert result["KXHIGHNY"].accepted_tickers == ("DAY1",)
+    assert fake.calls == [("KXHIGHNY", ("open", "unopened"))]
 
 
 def test_catalog_roll_replaces_tickers_and_clears_books(tmp_path):
