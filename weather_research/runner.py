@@ -219,7 +219,7 @@ class WeatherResearchRunner:
             for contract in definition.thresholds:
                 if contract.ticker != ticker:
                     continue
-                if contract.event_date is not None and contract.event_date != active_date:
+                if contract.event_date is None or contract.event_date != active_date:
                     continue
                 signal = realized_threshold_signal(contract, book, running, definition.rule.observation_type)
                 if signal:
@@ -227,7 +227,7 @@ class WeatherResearchRunner:
             for contract in definition.buckets:
                 if contract.ticker != ticker:
                     continue
-                if contract.event_date is not None and contract.event_date != active_date:
+                if contract.event_date is None or contract.event_date != active_date:
                     continue
                 signal = eliminated_bucket_signal(contract, book, running, definition.rule.observation_type)
                 if signal:
