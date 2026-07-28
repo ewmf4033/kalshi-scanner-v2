@@ -113,8 +113,8 @@ def test_monotonicity_fee_uses_actual_executable_depth():
     )
     assert rows
     assert rows[0]["fee_size"] == 8
-    assert rows[0]["pair_fee_cents"] == 1.25
-    assert rows[0]["net_lock_cents"] == 2.75
+    assert rows[0]["pair_fee_cents"] == pytest.approx(1.25)
+    assert rows[0]["net_lock_cents"] == pytest.approx(2.75)
 
 
 def test_exact_fill_conditional_ev_collapse():
