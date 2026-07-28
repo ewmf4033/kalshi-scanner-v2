@@ -10,7 +10,7 @@ from .observations import (
     StationObservation,
     apply_rule_rounding,
     climatological_date,
-    recompute_candidate_extremes,
+    recompute_all_candidate_extremes,
     recompute_day_extreme,
     rounding_candidates,
     update_running_extreme,
@@ -70,19 +70,19 @@ class WeatherResearchRunner:
         date: str,
         parsed_cf_value: float,
         parsed_c_value: float,
-        parsed_cff_value: float,
         selected_parsed_value: float,
         settled_value: float,
         signal_fired: bool,
         would_have_filled: bool,
         tolerance_tenths: int = 0,
+        parsed_cff_value: float | None = None,
     ) -> None:
         self.store.add_reconciliation(
             station_id=station_id,
             date=date,
             parsed_cf_value=parsed_cf_value,
             parsed_c_value=parsed_c_value,
-            parsed_cff_value=parsed_cff_value,
+            parsed_cff_value=parsed_cf_value if parsed_cff_value is None else parsed_cff_value,
             selected_parsed_value=selected_parsed_value,
             settled_value=settled_value,
             signal_fired=signal_fired,
@@ -167,7 +167,7 @@ class WeatherResearchRunner:
             raise ValueError("day observation batch crosses climatological dates")
         local_date = next(iter(local_dates))
         selected_running = recompute_day_extreme(observations, rule.observation_type, rule.rounding)
-        running_cf, running_c, running_cff = recompute_candidate_extremes(observations, rule.observation_type)
+        running_cf, running_c, running_cff = recompute_all_candidate_extremes(observations, rule.observation_type)
         key = (series_ticker, local_date)
         self.running_extremes[key] = selected_running
         self.candidate_extremes[key] = (running_cf, running_c, running_cff)
