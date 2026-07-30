@@ -68,6 +68,8 @@ def load_config(path: str | Path) -> LiveConfig:
 
 
 class LiveWeatherLogger:
+    SNAPSHOT_RETRY_SECONDS = 5.0
+
     def __init__(self, config: LiveConfig, kalshi: KalshiClient | None = None) -> None:
         self.config = config
         self.kalshi = kalshi or KalshiClient.from_env()
@@ -76,6 +78,7 @@ class LiveWeatherLogger:
         self.nws = NWSObservationClient()
         self._stop = asyncio.Event()
         self._command_id = 1
+        self._snapshot_requested_at: dict[str, float] = {}
 
     def stop(self) -> None:
         self._stop.set()
@@ -124,6 +127,7 @@ class LiveWeatherLogger:
         if changed:
             self.runner.books = OrderBookState()
             self.runner.quote_first_seen.clear()
+            self._snapshot_requested_at.clear()
             log.info(
                 "weather catalog changed: %d -> %d tickers (%d rejected)",
                 len(old_tickers), len(new_tickers), rejected_total,
@@ -148,6 +152,7 @@ class LiveWeatherLogger:
                     ping_timeout=20,
                     max_queue=10_000,
                 ) as ws:
+                    self._snapshot_requested_at.clear()
                     await ws.send(json.dumps(orderbook_subscription(self._next_id(), tickers)))
                     refresh_at = asyncio.get_running_loop().time() + self.config.discovery_seconds
                     while not self._stop.is_set():
@@ -162,11 +167,22 @@ class LiveWeatherLogger:
                                     break
                             continue
                         message: dict[str, Any] = json.loads(raw)
+                        payload = message.get("msg", message.get("data", {}))
+                        ticker = payload.get("market_ticker") or payload.get("ticker")
+                        msg_type = message.get("type")
                         try:
                             self.runner.ingest_book_message(message)
+                            if ticker and msg_type in {"orderbook_snapshot", "snapshot"}:
+                                self._snapshot_requested_at.pop(str(ticker), None)
                         except SequenceGapError as exc:
                             log.warning("sequence invalidation: %s", exc)
-                            await ws.send(json.dumps(self._snapshot_request(message)))
+                            if not ticker:
+                                continue
+                            now = asyncio.get_running_loop().time()
+                            last = self._snapshot_requested_at.get(str(ticker))
+                            if last is None or now - last >= self.SNAPSHOT_RETRY_SECONDS:
+                                await ws.send(json.dumps(self._snapshot_request(message)))
+                                self._snapshot_requested_at[str(ticker)] = now
             except asyncio.CancelledError:
                 raise
             except Exception:
