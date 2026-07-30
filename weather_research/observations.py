@@ -54,6 +54,14 @@ def rounding_candidates(temperature_c: float) -> RoundingCandidates:
     )
 
 
+def selected_temperature_f(temperature_c: float, rounding: str) -> float:
+    """Select the configured settlement-path candidate from raw Celsius."""
+    candidates = rounding_candidates(temperature_c)
+    if rounding == "celsius_int_then_convert":
+        return candidates.temperature_f_round_cff
+    return apply_rule_rounding(temperature_c * 9 / 5 + 32, rounding)
+
+
 @dataclass
 class NWSObservationClient:
     base_url: str = "https://api.weather.gov"
@@ -163,6 +171,10 @@ def apply_rule_rounding(value: float, rounding: str) -> float:
         return float(floor(value))
     if rounding == "ceil":
         return float(ceil(value))
+    if rounding == "celsius_int_then_convert":
+        temperature_c = (value - 32) * 5 / 9
+        rounded_c = _half_up_integer(temperature_c)
+        return _half_up_integer(rounded_c * 9 / 5 + 32)
     raise ValueError(f"unsupported rounding rule: {rounding}")
 
 
@@ -210,5 +222,5 @@ def recompute_candidate_extremes(
 def recompute_day_extreme(observations: list[StationObservation], observation_type: str, rounding: str) -> float:
     if not observations:
         raise ValueError("observations cannot be empty")
-    values = [apply_rule_rounding(row.temperature_f, rounding) for row in observations]
+    values = [selected_temperature_f(row.temperature_c, rounding) for row in observations]
     return extreme(values, observation_type)
