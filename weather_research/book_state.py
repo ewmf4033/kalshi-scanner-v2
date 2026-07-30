@@ -26,7 +26,10 @@ class OrderBookState:
 
     With ``use_yes_price: true``, NO-side prices are already expressed on the
     YES scale. They are offers, so the lowest NO-side level is the best YES ask.
-    Any uncertain transition clears local state and requires a fresh snapshot.
+
+    A subscription-level sequence gap invalidates every book carried by that
+    subscription. A ticker-local reconstruction failure invalidates only that
+    ticker, so one missing snapshot cannot erase otherwise valid books.
     """
 
     tracker: SequenceTracker = field(default_factory=SequenceTracker)
@@ -43,18 +46,35 @@ class OrderBookState:
         if not ticker:
             raise ValueError("order-book message missing market ticker")
 
+        if msg_type in {"orderbook_snapshot", "snapshot"}:
+            # A snapshot is authoritative for this ticker and also restores the
+            # subscription sequence tracker to the snapshot sequence.
+            self.tracker.accept_snapshot(sid, seq)
+            book = self._from_snapshot(ticker, payload)
+            self.books[ticker] = book
+            return book
+
         try:
-            if msg_type in {"orderbook_snapshot", "snapshot"}:
-                self.tracker.accept_snapshot(sid, seq)
-                book = self._from_snapshot(ticker, payload)
-            else:
-                self.tracker.accept_delta(sid, seq)
-                previous = self.books.get(ticker)
-                if previous is None:
-                    raise SequenceGapError(f"delta received without ticker snapshot: {ticker}")
-                book = self._from_delta(previous, payload)
+            self.tracker.accept_delta(sid, seq)
         except SequenceGapError:
+            # The sequence is subscription-wide. A true sequence gap means no
+            # ticker on this subscription can be trusted until recovery.
             self.books.clear()
+            raise
+
+        previous = self.books.get(ticker)
+        if previous is None:
+            # The stream sequence is valid, but this ticker has no usable local
+            # snapshot. Keep every other ticker intact and recover this one.
+            self.books.pop(ticker, None)
+            raise SequenceGapError(f"delta received without ticker snapshot: {ticker}")
+
+        try:
+            book = self._from_delta(previous, payload)
+        except SequenceGapError:
+            # Top-of-book deltas cannot reconstruct a depleted or unknown deeper
+            # level. Only this ticker needs a replacement snapshot.
+            self.books.pop(ticker, None)
             raise
 
         self.books[ticker] = book
