@@ -171,6 +171,10 @@ def apply_rule_rounding(value: float, rounding: str) -> float:
         return float(floor(value))
     if rounding == "ceil":
         return float(ceil(value))
+    if rounding == "celsius_int_then_convert":
+        temperature_c = (value - 32) * 5 / 9
+        rounded_c = _half_up_integer(temperature_c)
+        return _half_up_integer(rounded_c * 9 / 5 + 32)
     raise ValueError(f"unsupported rounding rule: {rounding}")
 
 
