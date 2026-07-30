@@ -54,6 +54,14 @@ def rounding_candidates(temperature_c: float) -> RoundingCandidates:
     )
 
 
+def selected_temperature_f(temperature_c: float, rounding: str) -> float:
+    """Select the configured settlement-path candidate from raw Celsius."""
+    candidates = rounding_candidates(temperature_c)
+    if rounding == "celsius_int_then_convert":
+        return candidates.temperature_f_round_cff
+    return apply_rule_rounding(temperature_c * 9 / 5 + 32, rounding)
+
+
 @dataclass
 class NWSObservationClient:
     base_url: str = "https://api.weather.gov"
@@ -210,5 +218,5 @@ def recompute_candidate_extremes(
 def recompute_day_extreme(observations: list[StationObservation], observation_type: str, rounding: str) -> float:
     if not observations:
         raise ValueError("observations cannot be empty")
-    values = [apply_rule_rounding(row.temperature_f, rounding) for row in observations]
+    values = [selected_temperature_f(row.temperature_c, rounding) for row in observations]
     return extreme(values, observation_type)
