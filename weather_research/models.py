@@ -24,7 +24,7 @@ class WeatherRule:
     station_id: str
     timezone: str
     observation_type: Literal["daily_high", "daily_low"]
-    rounding: Literal["nearest_int", "floor", "ceil", "none"]
+    rounding: Literal["nearest_int", "floor", "ceil", "none", "celsius_int_then_convert"]
     revision_policy: str
     source_name: str
     time_basis: Literal["civil", "local_standard"] = "civil"
